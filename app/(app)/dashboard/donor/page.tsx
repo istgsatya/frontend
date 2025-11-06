@@ -1,28 +1,15 @@
 "use client"
-import { useEffect, useState } from 'react'
+import useSWR from 'swr'
 import { api } from '@/lib/api'
+import CountUp from 'react-countup'
+
+const fetcher = (url: string) => api.get(url).then(r => r.data)
 
 export default function DonorDashboard() {
-  const [summary, setSummary] = useState<any>(null)
-  const [history, setHistory] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const { data: summary } = useSWR('/dashboard/donor', fetcher, { refreshInterval: 7000 })
+  const { data: history } = useSWR('/donations/me', fetcher, { refreshInterval: 7000 })
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [s, h] = await Promise.all([
-          api.get('/dashboard/donor').then(r => r.data),
-          api.get('/donations/me').then(r => r.data)
-        ])
-        setSummary(s)
-        setHistory(h)
-      } finally {
-        setLoading(false)
-      }
-    })()
-  }, [])
-
-  if (loading) return <div className="container py-10">Loading...</div>
+  if (!summary) return <div className="container py-10">Loading...</div>
 
   return (
     <div className="container py-6 space-y-8">
@@ -34,25 +21,29 @@ export default function DonorDashboard() {
 
       <section>
         <h2 className="text-xl font-semibold mb-3">Donation History</h2>
-        <div className="overflow-x-auto">
-          <table className="min-w-full border">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="text-left p-2 border">Date</th>
-                <th className="text-left p-2 border">Campaign</th>
-                <th className="text-left p-2 border">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((d) => (
-                <tr key={d.id} className="odd:bg-white even:bg-gray-50">
-                  <td className="p-2 border">{new Date(d.createdAt).toLocaleString()}</td>
-                  <td className="p-2 border">{d.campaignTitle}</td>
-                  <td className="p-2 border">{d.amount}</td>
+        <div className="card p-0 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-black/5">
+                <tr>
+                  <th className="text-left px-4 py-2">Date</th>
+                  <th className="text-left px-4 py-2">Campaign</th>
+                  <th className="text-left px-4 py-2">Amount</th>
+                  <th className="text-left px-4 py-2">Tx</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {history?.map((d: any) => (
+                  <tr key={d.id} className="border-t border-black/5">
+                    <td className="px-4 py-2 subtle">{new Date(d.createdAt).toLocaleString()}</td>
+                    <td className="px-4 py-2">{d.campaignTitle}</td>
+                    <td className="px-4 py-2">{d.amount}</td>
+                    <td className="px-4 py-2">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="text-brand-700 underline">{d.transactionHash}</a> : <span className="subtle">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
     </div>
@@ -61,9 +52,11 @@ export default function DonorDashboard() {
 
 function Card({ title, value }: { title: string, value: number }) {
   return (
-    <div className="rounded border p-4">
-      <div className="text-sm text-gray-600">{title}</div>
-      <div className="text-2xl font-semibold">{value}</div>
+    <div className="card p-4 transition-all hover:shadow-glass hover:-translate-y-0.5">
+      <div className="text-sm subtle">{title}</div>
+      <div className="text-2xl font-semibold mt-1">
+        <CountUp end={Number(value) || 0} duration={0.8} decimals={value % 1 !== 0 ? 2 : 0} />
+      </div>
     </div>
   )
 }

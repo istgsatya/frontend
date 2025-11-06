@@ -26,10 +26,12 @@ export function WalletRegistrationBanner() {
   if (user.wallets && user.wallets.length > 0) return null
 
   return (
-    <div className="bg-yellow-50 text-yellow-900 border-b border-yellow-200">
-      <div className="container py-2 flex items-center justify-between gap-3">
-        <p className="text-sm">To participate in donations and governance, you must register a wallet.</p>
-        <button onClick={registerWallet} className="text-sm px-3 py-1.5 rounded bg-yellow-600 text-white hover:bg-yellow-700">Register Wallet</button>
+    <div className="container pt-3">
+      <div className="card p-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-brand-200/60">
+        <p className="text-sm text-slate-800">
+          To participate in donations and governance, please register a wallet.
+        </p>
+        <button onClick={registerWallet} className="btn-primary">Register Wallet</button>
       </div>
     </div>
   )

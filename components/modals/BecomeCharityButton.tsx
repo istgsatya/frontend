@@ -7,7 +7,7 @@ export function BecomeCharityButton() {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <button onClick={() => setOpen(true)} className="w-full px-3 py-2 rounded bg-brand-600 text-white hover:bg-brand-700">Register Your Charity</button>
+      <button onClick={() => setOpen(true)} className="w-full btn-primary">Register Your Charity</button>
       {open && <BecomeCharityModal onClose={() => setOpen(false)} />}
     </>
   )
@@ -46,23 +46,23 @@ function BecomeCharityModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded shadow w-full max-w-lg p-6 space-y-4">
-        <h2 className="text-lg font-semibold">Become a Charity</h2>
+      <div className="card w-full max-w-lg p-6 space-y-4">
+        <h2 className="text-xl font-semibold">Become a Charity</h2>
         <div className="space-y-2">
           <label className="block text-sm">Charity Name</label>
-          <input value={name} onChange={e => setName(e.target.value)} className="w-full border rounded px-3 py-2" />
+          <input value={name} onChange={e => setName(e.target.value)} className="input" />
         </div>
         <div className="space-y-2">
           <label className="block text-sm">Description</label>
-          <textarea value={description} onChange={e => setDescription(e.target.value)} className="w-full border rounded px-3 py-2" />
+          <textarea value={description} onChange={e => setDescription(e.target.value)} className="input" />
         </div>
         <div className="space-y-2">
           <label className="block text-sm">Registration Document</label>
-          <input type="file" onChange={e => setFile(e.target.files?.[0] ?? null)} />
+          <input type="file" onChange={e => setFile(e.target.files?.[0] ?? null)} className="block text-sm" />
         </div>
         <div className="flex items-center justify-end gap-2 pt-2">
-          <button onClick={onClose} className="px-3 py-2 rounded border">Cancel</button>
-          <button onClick={submit} disabled={loading} className="px-3 py-2 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">{loading ? 'Submitting...' : 'Submit'}</button>
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <button onClick={submit} disabled={loading} className="btn-primary disabled:opacity-50">{loading ? 'Submitting...' : 'Submit'}</button>
         </div>
       </div>
     </div>

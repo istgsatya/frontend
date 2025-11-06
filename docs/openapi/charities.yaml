@@ -1,0 +1,268 @@
+openapi: 3.0.3
+info:
+  title: Transparent Cents - Charities Admin/Donor API (Frontend Spec)
+  version: "1.0.0"
+  description: |
+    Minimal, implementation-focused spec to drive the frontend for Donor, Platform Admin,
+    and Charity Admin views around charities listing and moderation. Methods for approve/reject
+    default to POST; confirm with backend and adjust if needed.
+servers:
+  - url: http://localhost:8080/api
+    description: Local API server
+
+paths:
+  /charities/approved:
+    get:
+      summary: List approved charities (public/donor)
+      description: Returns charities with status APPROVED. Auth optional.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Charity'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /charities:
+    get:
+      summary: List charities with status filter (admin)
+      description: Requires ROLE_PLATFORM_ADMIN when requesting non-APPROVED data like PENDING.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED]
+          required: true
+          description: Filter by status
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 0
+          required: false
+        - in: query
+          name: size
+          schema:
+            type: integer
+            minimum: 1
+          required: false
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Total-Count:
+              description: Optional total items for pagination
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Charity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /charities/{id}/approve:
+    post:
+      summary: Approve a charity (admin)
+      description: Method assumed POST; change to PATCH/PUT if backend differs.
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: integer
+          required: true
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApproveRequest'
+      responses:
+        '200':
+          description: Updated Charity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charity'
+        '204':
+          description: Approved with no body
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already reviewed conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /charities/{id}/reject:
+    post:
+      summary: Reject a charity (admin)
+      description: Method assumed POST; include reason if supported.
+      parameters:
+        - in: path
+          name: id
+          schema:
+            type: integer
+          required: true
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RejectRequest'
+      responses:
+        '200':
+          description: Updated Charity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charity'
+        '204':
+          description: Rejected with no body
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /charities/count:
+    get:
+      summary: Count charities by status (optional endpoint)
+      description: If backend supports it; otherwise compute count client-side.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [PENDING, APPROVED, REJECTED]
+          required: true
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Charity:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 4
+        name:
+          type: string
+          example: Helping Hands
+        description:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, APPROVED, REJECTED]
+        createdAt:
+          type: string
+          format: date-time
+        contactEmail:
+          type: string
+          format: email
+        website:
+          type: string
+          format: uri
+        logoUrl:
+          type: string
+          format: uri
+    ApproveRequest:
+      type: object
+      description: Optional body for approve (server may ignore)
+      properties: {}
+    RejectRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          example: Insufficient documents
+    CountResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+          example: 3
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+          example: An error occurred

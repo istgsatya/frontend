@@ -3,8 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --bg: 255 255 255;
-  --fg: 17 24 39;
+  --bg: 248 250 252; /* slate-50 */
+  --fg: 15 23 42;    /* slate-900 */
+  --brand: 34 197 94; /* brand-500 */
+  --accent: 168 85 247; /* accent-500 */
 }
 
 html, body, #__next {
@@ -13,9 +15,96 @@ html, body, #__next {
 
 body {
   color: rgb(var(--fg));
-  background: rgb(var(--bg));
+  background: radial-gradient(1200px 800px at 10% -10%, rgba(34,197,94,0.08), transparent 60%),
+              radial-gradient(1000px 700px at 100% 0%, rgba(52,211,153,0.08), transparent 60%),
+              rgb(var(--bg));
+  background-attachment: fixed;
 }
 
 .container {
   @apply mx-auto px-4 sm:px-6 lg:px-8;
+}
+
+/* Reusable UI primitives */
+.card {
+  @apply bg-white/80 backdrop-blur-xl border border-white/40 shadow-soft rounded-xl;
+}
+
+.glass {
+  @apply bg-white/60 backdrop-blur-md border border-white/30 shadow-glass;
+}
+
+.glass-deeper {
+  @apply bg-white/50 backdrop-blur-xl border border-white/40 shadow-glass;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2;
+}
+.btn-primary {
+  @apply btn bg-brand-600 text-white hover:bg-brand-700 focus:ring-brand-500;
+}
+@layer components {
+  .btn-accent {
+    @apply btn bg-accent-600 text-white hover:bg-accent-700 focus:ring-accent-500;
+  }
+  .btn-gradient {
+    @apply btn text-white bg-gradient-to-r from-brand-500 via-accent-500 to-brand-500 bg-[length:200%_auto] hover:bg-right focus:ring-brand-500;
+  }
+}
+.btn-ghost {
+  @apply btn bg-transparent hover:bg-black/5;
+}
+.btn-outline {
+  @apply btn border border-black/10 hover:bg-black/5;
+}
+
+.input {
+  @apply w-full rounded-lg border border-black/10 bg-white/70 backdrop-blur placeholder:text-gray-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500;
+}
+
+.badge {
+  @apply inline-flex items-center rounded-full bg-brand-50 text-brand-700 px-2.5 py-1 text-xs font-medium border border-brand-100;
+}
+
+.chip {
+  @apply inline-flex items-center gap-1 rounded-full bg-black/5 text-slate-700 px-2.5 py-1 text-xs border border-black/10;
+}
+@layer components {
+  .tag {
+    @apply inline-flex items-center rounded-md bg-accent-50 text-accent-700 px-2 py-0.5 text-xs border border-accent-100;
+  }
+}
+
+.heading {
+  @apply text-2xl font-semibold tracking-tight;
+}
+
+.subtle {
+  @apply text-sm text-gray-600;
+}
+
+.divider { @apply h-px w-full bg-black/10 my-4; }
+
+.card-hover { @apply transition-all hover:-translate-y-0.5 hover:shadow-glass; }
+.hover-lift { @apply transition-transform hover:-translate-y-0.5; }
+
+.link-underline { @apply underline underline-offset-4 decoration-black/30 hover:decoration-brand-500 transition-colors; }
+
+/* Animated hero background */
+.hero-bg {
+  background-image: radial-gradient(600px 400px at 10% 10%, rgba(34,197,94,0.10), transparent 60%),
+                    radial-gradient(600px 400px at 90% 0%, rgba(168,85,247,0.10), transparent 60%);
+}
+
+/* Skeleton / shimmer utility */
+.skeleton {
+  background: linear-gradient(90deg, rgba(0,0,0,0.06) 25%, rgba(0,0,0,0.10) 37%, rgba(0,0,0,0.06) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
