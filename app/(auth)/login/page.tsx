@@ -25,7 +25,9 @@ export default function LoginPage() {
   setUser(user)
   // Also call combined helper for completeness
   login(accessToken, user)
+  // Navigate home and refresh client/server data so role-based UI updates immediately
   router.replace('/')
+  try { router.refresh() } catch {}
     } catch (e: any) {
       alert(e?.response?.data?.message || e?.message || 'Login failed')
     } finally {

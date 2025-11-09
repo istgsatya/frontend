@@ -1,6 +1,7 @@
 "use client"
 import useSWR from 'swr'
 import { api } from '@/lib/api'
+import { formatDateHuman, formatEth } from '@/lib/format'
 import CountUp from 'react-countup'
 
 const fetcher = (url: string) => api.get(url).then(r => r.data)
@@ -35,9 +36,9 @@ export default function DonorDashboard() {
               <tbody>
                 {history?.map((d: any) => (
                   <tr key={d.id} className="border-t border-black/5">
-                    <td className="px-4 py-2 subtle">{new Date(d.createdAt).toLocaleString()}</td>
+                    <td className="px-4 py-2 subtle">{formatDateHuman(d.createdAt)}</td>
                     <td className="px-4 py-2">{d.campaignTitle}</td>
-                    <td className="px-4 py-2">{d.amount}</td>
+                    <td className="px-4 py-2">{formatEth(d.amount, 6)}</td>
                     <td className="px-4 py-2">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="text-brand-700 underline">{d.transactionHash}</a> : <span className="subtle">—</span>}</td>
                   </tr>
                 ))}

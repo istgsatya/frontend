@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth'
 import { useParams } from 'next/navigation'
 import { fetchEthPrice, fiatToEth } from '@/lib/price'
+import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
 import { getContract, getSigner, getProvider, ensureSepolia } from '@/lib/web3'
 import { parseEther } from 'ethers'
 import { motion } from 'framer-motion'
@@ -55,8 +56,8 @@ export default function CampaignDetail() {
         if (mounted) setLoading(false)
       }
     })()
-    // fetch a live price to allow quick ETH preview; will be refreshed as user types
-    fetchEthPrice('inr').then(setPrice).catch(() => setPrice(0))
+  // fetch a live price to allow quick ETH preview and convert Raised -> INR
+  fetchEthPrice('inr').then(setPrice).catch(() => setPrice(0))
     return () => { mounted = false }
   }, [id])
 
@@ -71,8 +72,8 @@ export default function CampaignDetail() {
           api.get(`/campaigns/${id}/withdrawals`).then(r => r.data),
           api.get(`/campaigns/${id}/donations`).then(r => r.data),
         ])
-        if (cRes.status === 'fulfilled') setCampaign(cRes.value)
-        if (bRes.status === 'fulfilled') setBalance(Number(bRes.value ?? 0))
+  if (cRes.status === 'fulfilled') setCampaign(cRes.value)
+  if (bRes.status === 'fulfilled') setBalance(Number(bRes.value ?? 0))
         if (wRes.status === 'fulfilled') setWithdrawals(wRes.value)
         if (dRes.status === 'fulfilled') setDonations(dRes.value)
       } catch {}
@@ -304,12 +305,12 @@ export default function CampaignDetail() {
           <div className="flex-1">
             <AnimatedProgress goal={campaign?.goal} raised={balance ?? Number(campaign?.amountRaised ?? 0)} />
           </div>
-          <div className="text-sm subtle w-40 text-right">Raised: {typeof balance === 'number' ? `${balance.toFixed(6)} ETH` : `0 ETH`} </div>
+          <div className="text-sm subtle w-40 text-right">Raised: {typeof balance === 'number' ? formatINR((balance ?? 0) * price, 0) : formatINR(0, 0)} </div>
         </div>
         <div className="card mt-4 p-4 space-y-3">
           <div className="text-sm text-slate-700">Enter amount (INR)</div>
           <input value={amountFiat} onChange={e => setAmountFiat(e.target.value)} className="input" placeholder="1000" />
-          <div className="text-sm subtle transition-opacity">≈ {isFinite(ethAmount) ? `${ethAmount.toFixed(6)} ETH` : '—'} </div>
+          <div className="text-sm subtle transition-opacity">≈ {isFinite(ethAmount) ? formatEth(ethAmount, 6) : '—'} </div>
           {/* Block donate for charity admins donating to their own campaigns */}
           <button
             onClick={donate}
@@ -358,18 +359,25 @@ export default function CampaignDetail() {
           {Array.isArray(donations) && donations.length > 0 ? (
             <div className="card p-4">
               <ul className="space-y-2 text-sm">
-                {donations.map((d: any) => (
-                  <li key={d.id || d.transactionHash} className="flex justify-between items-start">
-                    <div className="max-w-lg">
-                      <div className="font-medium">{d.username ?? d.donorName ?? d.from ?? (d.from?.slice ? `${d.from.slice(0,6)}...${d.from.slice(-4)}` : 'Anonymous')}</div>
-                      <div className="subtle text-xs">{new Date(d.createdAt).toLocaleString()} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{typeof d.amount === 'number' ? `${d.amount.toFixed(6)} ETH` : d.amount}</div>
-                      <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">View on Etherscan</a> : <span className="subtle">—</span>}</div>
-                    </div>
-                  </li>
-                ))}
+                {donations.map((d: any) => {
+                  // Resolve donation amounts robustly: server may provide fiat or ETH fields
+                  const ethAmt = Number(d?.amount ?? d?.amountEth ?? d?.value ?? 0)
+                  const serverFiat = Number(d?.amountFiat ?? d?.amountInr ?? d?.fiatAmount ?? 0)
+                  const inrValue = (serverFiat && serverFiat > 0) ? serverFiat : ((price && ethAmt) ? ethAmt * price : 0)
+                  return (
+                    <li key={d.id || d.transactionHash} className="flex justify-between items-start">
+                      <div className="max-w-lg">
+                        <div className="font-medium">{d.username ?? d.donorName ?? d.from ?? (d.from?.slice ? `${d.from.slice(0,6)}...${d.from.slice(-4)}` : 'Anonymous')}</div>
+                                    <div className="subtle text-xs">{formatDateHuman(d.createdAt)} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-semibold">{formatINR(Number(inrValue) || 0, 0)}</div>
+                        {ethAmt ? <div className="text-xs subtle mt-1">≈ {typeof ethAmt === 'number' ? formatEth(ethAmt, 6) : ethAmt} ETH</div> : null}
+                        <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">View on Etherscan</a> : <span className="subtle">—</span>}</div>
+                      </div>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           ) : (
@@ -407,12 +415,12 @@ function WithdrawalRequestCard({ withdrawal, onVote, onRefresh }: { withdrawal: 
       <div className="flex items-center justify-between">
         <div>
           <div className="font-medium">{withdrawal.purpose}</div>
-          <div className="text-sm subtle">Amount: {withdrawal.amount} ETH</div>
+          <div className="text-sm subtle">Amount: {formatEth(withdrawal.amount, 6)}</div>
           <div className="text-sm">Status: <span className={`px-2 py-1 rounded-full text-xs ${badge}`}>{status}</span></div>
-          <div className="text-xs subtle mt-1">Submitted: {new Date(withdrawal.createdAt).toLocaleString()}</div>
+          <div className="text-xs subtle mt-1">Submitted: {formatDateHuman(withdrawal.createdAt)}</div>
         </div>
         <div className="flex flex-col items-end gap-2">
-          {withdrawal.status === 'PENDING_VOTE' && new Date(withdrawal.votingDeadline) > new Date() && (
+          {withdrawal.status === 'PENDING_VOTE' && (new Date(withdrawal.votingDeadline).getTime() || 0) > Date.now() && (
             <div className="flex gap-2">
               <button onClick={() => onVote(withdrawal.id, true)} className="btn bg-emerald-600 hover:bg-emerald-700 text-white">Approve</button>
               <button onClick={() => onVote(withdrawal.id, false)} className="btn bg-rose-600 hover:bg-rose-700 text-white">Reject</button>

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { api } from '@/lib/api'
+import { formatDateHuman, formatEth } from '@/lib/format'
 import useSWRImmutable from 'swr/immutable'
 import { useAuthStore } from '@/lib/store/auth'
 
@@ -46,9 +47,9 @@ export default function MyAccountPage() {
                   <tbody>
                     {history?.map((d: any) => (
                       <tr key={d.id} className="border-t border-black/5">
-                        <td className="px-4 py-2 subtle">{new Date(d.createdAt).toLocaleString()}</td>
+                        <td className="px-4 py-2 subtle">{formatDateHuman(d.createdAt)}</td>
                         <td className="px-4 py-2">{d.campaignTitle}</td>
-                        <td className="px-4 py-2">{d.amount}</td>
+                        <td className="px-4 py-2">{formatEth(d.amount, 6)}</td>
                       </tr>
                     ))}
                   </tbody>

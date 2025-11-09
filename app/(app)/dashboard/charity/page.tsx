@@ -6,6 +6,7 @@ import { useAuthStore } from '@/lib/store/auth'
 import { useRouter } from 'next/navigation'
 import CountUp from 'react-countup'
 import { fetchEthPrice, fiatToEth } from '@/lib/price'
+import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
 
 const fetcher = (url: string) => api.get(url).then(r => r.data)
 
@@ -15,6 +16,7 @@ export default function CharityDashboard() {
 
   const [campaignBalances, setCampaignBalances] = useState<Record<string, number>>({})
   const [totalRaisedReal, setTotalRaisedReal] = useState<number>(0)
+  const [price, setPrice] = useState<number>(0)
 
   useEffect(() => {
     if (!user) return
@@ -50,8 +52,17 @@ export default function CharityDashboard() {
         if (!mounted) return
         const map = Object.fromEntries(entries)
         setCampaignBalances(map)
-        const total = Object.values(map).reduce((s, n) => s + (Number(n) || 0), 0)
-        setTotalRaisedReal(total)
+
+        // Compute total raised in INR using server-provided fiat when available,
+        // otherwise convert on-chain ETH balances to INR via price.
+        const totalInr = summary.campaigns.reduce((acc: number, c: any) => {
+          const serverRaised = Number(c?.raised ?? 0)
+          if (serverRaised && serverRaised > 0) return acc + serverRaised
+          const balEth = Number(map[String(c.id)] ?? 0)
+          return acc + (balEth * price)
+        }, 0)
+
+        setTotalRaisedReal(totalInr)
       } catch {
         if (!mounted) return
       }
@@ -60,14 +71,19 @@ export default function CharityDashboard() {
     fetchBalances()
     const iv = setInterval(fetchBalances, 7000)
     return () => { mounted = false; clearInterval(iv) }
-  }, [summary?.campaigns])
+  }, [summary?.campaigns, price])
+
+  // fetch INR price for display
+  useEffect(() => {
+    fetchEthPrice('inr').then(setPrice).catch(() => setPrice(0))
+  }, [])
 
   if (!summary) return <div className="container py-10">Loading...</div>
 
   return (
     <div className="container py-6 space-y-8">
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card title="Total Raised" value={typeof totalRaisedReal === 'number' && totalRaisedReal > 0 ? totalRaisedReal : (summary?.totalRaised ?? 0)} />
+        // (components like Card are defined below in this file)
         <Card title="Active Campaigns" value={summary?.activeCampaigns ?? 0} />
         <Card title="Pending Withdrawals" value={summary?.pendingWithdrawals ?? 0} />
       </section>
@@ -87,14 +103,18 @@ export default function CharityDashboard() {
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="font-medium">{c.title}</div>
-                    <div className="text-sm subtle">Raised: {typeof campaignBalances[String(c.id)] === 'number' ? `${campaignBalances[String(c.id)].toFixed(6)} ETH` : (c.raised ?? c.amountRaised ?? 0)}</div>
-                    <div className="text-sm subtle">Goal: {c.goal ?? c.goalAmount ?? '—'}</div>
+                    {/* Prefer server-provided fiat raised (INR). Otherwise convert on-chain ETH balance to INR */}
+                    <div className="text-sm subtle">Raised: {formatINR(Number(c?.raised ?? 0) || (Number(campaignBalances[String(c.id)] ?? 0) * price) || 0, 0)}</div>
+                    {/* Prefer server-provided goal fiat (goalFiat) if present, otherwise convert goalAmount (ETH) to INR for display */}
+                    <div className="text-sm subtle">Goal: {typeof c?.goalFiat === 'number' ? formatINR(Number(c.goalFiat), 0) : (c.goalAmount ? formatINR(Number(c.goalAmount) * price, 0) : '—')}</div>
                     {/* Progress bar for each campaign using on-chain balance */}
                     <div className="mt-2">
                       {(() => {
-                        const bal = Number(campaignBalances[String(c.id)] ?? (c.raised ?? c.amountRaised ?? 0))
-                        const goal = Number(c.goal ?? c.goalAmount ?? 0)
-                        const pct = !goal || goal <= 0 ? 0 : Math.min(100, Math.round((bal / goal) * 100))
+                        // Compute progress using INR units so percentages make sense
+                        const balEth = Number(campaignBalances[String(c.id)] ?? 0)
+                        const balInr = Number(c?.raised ?? 0) || (balEth * price)
+                        const goalInr = Number(c?.goalFiat ?? 0) || (Number(c.goalAmount ?? c.goal ?? 0) * price)
+                        const pct = !goalInr || goalInr <= 0 ? 0 : Math.min(100, Math.round((balInr / goalInr) * 100))
                         return (
                           <div>
                             <div className="w-full bg-black/5 rounded-full h-2 overflow-hidden">
@@ -111,13 +131,13 @@ export default function CharityDashboard() {
                     <RequestWithdrawalButton campaign={c} />
                   </div>
                 </div>
-                {Array.isArray(c.donations) && (
+                    {Array.isArray(c.donations) && (
                   <div className="mt-3">
                     <div className="text-sm subtle mb-2">Donations</div>
                     <ul className="text-sm space-y-1">
                       {c.donations.map((d: any) => (
                         <li key={d.id} className="flex justify-between">
-                          <span>{new Date(d.createdAt).toLocaleString()} — {d.amount}</span>
+                          <span>{formatDateHuman(d.createdAt)} — {formatINR((Number(d.amount) || 0) * price, 0)}</span>
                           <span>{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="text-brand-700 underline">{d.transactionHash}</a> : <span className="subtle">—</span>}</span>
                         </li>
                       ))}
@@ -151,12 +171,12 @@ export default function CharityDashboard() {
                 <ul className="space-y-2 text-sm">
                   {flat.map((d: any) => (
                     <li key={d.id || `${d.transactionHash}-${d.createdAt}`} className="flex justify-between items-start">
-                      <div className="max-w-lg">
-                        <div className="font-medium">{d.donorName ?? d.from ?? d.wallet ?? 'Anonymous'}</div>
-                        <div className="subtle text-xs">{new Date(d.createdAt).toLocaleString()} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
-                      </div>
+                        <div className="max-w-lg">
+                          <div className="font-medium">{d.donorName ?? d.from ?? d.wallet ?? 'Anonymous'}</div>
+                          <div className="subtle text-xs">{formatDateHuman(d.createdAt)} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
+                        </div>
                       <div className="text-right">
-                        <div className="font-semibold">{d.amount}</div>
+                        <div className="font-semibold">{formatINR((Number(d.amount) || 0) * price, 0)}</div>
                         <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">{d.transactionHash}</a> : <span className="subtle">—</span>}</div>
                       </div>
                     </li>
@@ -171,12 +191,14 @@ export default function CharityDashboard() {
   )
 }
 
-function Card({ title, value }: { title: string, value: number }) {
+function Card({ title, value, price }: { title: string, value: number, price?: number }) {
+  // If a price is provided, display the value as INR (value is expected to be ETH)
+  const display = typeof price === 'number' && isFinite(price) ? formatINR((Number(value) || 0) * price, 0) : undefined
   return (
     <div className="card p-4 transition-all hover:shadow-glass hover:-translate-y-0.5">
       <div className="text-sm subtle">{title}</div>
       <div className="text-2xl font-semibold mt-1">
-        <CountUp end={Number(value) || 0} duration={0.8} decimals={value % 1 !== 0 ? 2 : 0} />
+        {display ? display : <CountUp end={Number(value) || 0} duration={0.8} decimals={value % 1 !== 0 ? 2 : 0} />}
       </div>
     </div>
   )
@@ -192,8 +214,13 @@ function CreateCampaignButton() {
       // Convert fiat goal to ETH using price feed (store goals in ETH)
       const price = await fetchEthPrice('inr')
       const goalEth = fiatToEth(Number(goalFiat), price)
-      // Send ETH value to backend so it stores goal in ETH
-      await api.post('/campaigns', { title, goalAmount: goalEth, description })
+      // Enforce minimum goal in fiat: ₹100
+      if (Number(goalFiat) < 100) {
+        alert('Minimum campaign goal is ₹100. Please increase your goal.')
+        return
+      }
+      // Send both fiat and ETH values to backend: goalFiat (INR) and goalAmount (ETH) for compatibility.
+      await api.post('/campaigns', { title, goalFiat: Number(goalFiat), goalAmount: goalEth, description })
       alert('Campaign created')
     } catch (e: any) {
       alert(e?.response?.data?.message || e?.message || 'Failed')

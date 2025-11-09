@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { formatEth } from '@/lib/format'
 
 type Charity = { id: string | number; name?: string; title?: string }
 type Campaign = {
@@ -87,7 +88,7 @@ export default async function CampaignsBrowsePage() {
                   <div className="h-2 w-full rounded bg-slate-200 overflow-hidden">
                     <div className="h-full bg-brand-600" style={{ width: `${pct}%` }} />
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">{raised?.toLocaleString?.()} / {goal?.toLocaleString?.()}</div>
+                  <div className="mt-1 text-xs text-slate-500">{typeof raised === 'number' ? formatEth(raised, 6) : (raised ?? '—')} / {typeof goal === 'number' ? formatEth(goal, 6) : (goal ?? '—')}</div>
                 </div>
               )}
 
