@@ -10,6 +10,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const isAuthed = useAuthStore(s => s.isAuthenticated)
+  const authLoading = useAuthStore(s => s.authLoading)
   const user = useAuthStore(s => s.user)
   const pathname = usePathname()
 
@@ -19,7 +20,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const hideFooter = isLanding || pathname?.startsWith('/login') || pathname?.startsWith('/signup')
 
   return (
-    <div className="min-h-screen flex flex-col">
+    // When auth state is being determined, show a full-screen loader to avoid UI flicker
+    authLoading ? (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="subtle">Loading…</div>
+      </div>
+    ) : (
+      <div className="min-h-screen flex flex-col">
       <Navbar />
       {/* Show wallet prompt when user is authed and either has an empty wallets array or the backend didn't include wallets */}
       {isAuthed && user && (!Array.isArray(user.wallets) || user.wallets.length === 0) && !isAuthRoute ? (
@@ -43,6 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
       </div>
       {!hideFooter && <Footer />}
-    </div>
+      </div>
+    )
   )
 }

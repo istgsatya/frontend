@@ -294,6 +294,11 @@ export default function CampaignDetail() {
   if (loading) return <div className="container py-10"><div className="subtle">Loading...</div></div>
   if (!campaign) return <div className="container py-10"><div className="subtle">Not found.</div></div>
 
+  // Determine whether the campaign's goal (in ETH) has been reached using on-chain balance as source of truth
+  const currentRaisedEth = Number(balance ?? Number(campaign?.amountRaised ?? 0))
+  const campaignGoalEth = Number(campaign?.goal ?? campaign?.goalAmount ?? campaign?.targetAmount ?? 0)
+  const goalReached = campaignGoalEth > 0 && currentRaisedEth >= campaignGoalEth
+
   return (
     <div className="container py-6 space-y-8">
       <section className="space-y-3">
@@ -312,16 +317,19 @@ export default function CampaignDetail() {
           <input value={amountFiat} onChange={e => setAmountFiat(e.target.value)} className="input" placeholder="1000" />
           <div className="text-sm subtle transition-opacity">≈ {isFinite(ethAmount) ? formatEth(ethAmount, 6) : '—'} </div>
           {/* Block donate for charity admins donating to their own campaigns */}
-          <button
-            onClick={donate}
-            disabled={donating || (
-              (user as any)?.roles?.includes?.('ROLE_CHARITY_ADMIN') && (
-                  // campaign may have charityId or campaign.charity?.id; user may have charityId
-                  String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(campaign?.charityId ?? campaign?.charity?.id)
-                )
-            )}
-            className="btn-primary w-full sm:w-auto relative overflow-hidden disabled:opacity-70"
-          >
+          {goalReached ? (
+            <div className="rounded-md bg-emerald-900/30 border border-emerald-700 text-emerald-200 px-4 py-3 font-medium">🎉 This campaign has reached its goal — donations are closed.</div>
+          ) : (
+            <button
+              onClick={donate}
+              disabled={donating || (
+                (user as any)?.roles?.includes?.('ROLE_CHARITY_ADMIN') && (
+                    // campaign may have charityId or campaign.charity?.id; user may have charityId
+                    String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(campaign?.charityId ?? campaign?.charity?.id)
+                  )
+              )}
+              className="btn-primary w-full sm:w-auto relative overflow-hidden disabled:opacity-70"
+            >
             {!donateSuccess ? (
               <span className="inline-flex items-center gap-2">
                 {donating && (
@@ -340,7 +348,8 @@ export default function CampaignDetail() {
                 Success
               </motion.span>
             )}
-          </button>
+            </button>
+          )}
           {(user as any)?.roles?.includes?.('ROLE_CHARITY_ADMIN') && String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(campaign?.charityId ?? campaign?.charity?.id) && (
             <div className="mt-2 text-sm text-rose-600">Charity admins cannot donate to campaigns belonging to their own charity.</div>
           )}

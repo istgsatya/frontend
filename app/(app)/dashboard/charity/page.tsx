@@ -7,12 +7,17 @@ import { useRouter } from 'next/navigation'
 import CountUp from 'react-countup'
 import { fetchEthPrice, fiatToEth } from '@/lib/price'
 import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
+import DonationsTable from '@/components/DonationsTable'
 
 const fetcher = (url: string) => api.get(url).then(r => r.data)
 
 export default function CharityDashboard() {
   const user = useAuthStore(s => s.user)
   const router = useRouter()
+
+  const [showActive, setShowActive] = useState(false)
+  const [displayedCampaigns, setDisplayedCampaigns] = useState<any[] | null>(null)
+  const [showDropdown, setShowDropdown] = useState(false)
 
   const [campaignBalances, setCampaignBalances] = useState<Record<string, number>>({})
   const [totalRaisedReal, setTotalRaisedReal] = useState<number>(0)
@@ -28,6 +33,13 @@ export default function CharityDashboard() {
   }, [user, router])
 
   const { data: summary } = useSWR(user ? '/dashboard/charity' : null, fetcher, { refreshInterval: 7000 })
+  // fetch all donations for this charity (protected route) and keep them live
+  const { data: donationsData, isValidating: donationsLoading } = useSWR(user ? '/charities/me/donations' : null, fetcher, { refreshInterval: 7000 })
+  const [allDonations, setAllDonations] = useState<any[]>([])
+
+  useEffect(() => {
+    if (Array.isArray(donationsData)) setAllDonations(donationsData)
+  }, [donationsData])
   // When campaigns are present, fetch on-chain balances for each and compute a real total
   useEffect(() => {
     if (!summary) return
@@ -83,7 +95,6 @@ export default function CharityDashboard() {
   return (
     <div className="container py-6 space-y-8">
       <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        // (components like Card are defined below in this file)
         <Card title="Active Campaigns" value={summary?.activeCampaigns ?? 0} />
         <Card title="Pending Withdrawals" value={summary?.pendingWithdrawals ?? 0} />
       </section>
@@ -91,14 +102,71 @@ export default function CharityDashboard() {
       <div className="card p-4 flex flex-col sm:flex-row gap-3">
         <CreateCampaignButton />
         <CreatePostButton />
+        <div className="ml-auto relative">
+          <button
+            onClick={async () => {
+              try {
+                const charityId = (user as any)?.charityId ?? (user as any)?.charity?.id
+                if (!charityId) return alert('No charity associated with your account')
+                const res = await api.get(`/charities/${charityId}/campaigns`)
+                const list = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.data) ? res.data.data : [])
+                setDisplayedCampaigns(list)
+                setShowActive(true)
+                // show dropdown immediately and fetch up-to-date on-chain balances
+                setShowDropdown(true);
+
+                // fetch per-campaign on-chain balances for the displayed list so the Raised amount
+                // matches the campaign page (source-of-truth: GET /campaigns/{id}/balance)
+                (async () => {
+                  try {
+                    const entries = await Promise.all((list || []).map(async (c: any) => {
+                      try {
+                        const b = await api.get(`/campaigns/${c.id}/balance`).then(r => r.data?.balance ?? r.data)
+                        return [String(c.id), Number(b ?? 0)] as const
+                      } catch {
+                        return [String(c.id), 0] as const
+                      }
+                    }))
+                    const map = Object.fromEntries(entries)
+                    // merge with existing campaignBalances so other parts of the page keep working
+                    setCampaignBalances(prev => ({ ...(prev ?? {}), ...map }))
+                  } catch (err) {
+                    // ignore - dropdown will fall back to server-provided fiat raised if present
+                  }
+                })()
+                // small delay to allow dropdown render then scroll to it
+                setTimeout(() => { try { document.getElementById('my-campaigns')?.scrollIntoView({ behavior: 'smooth' }) } catch {} }, 80)
+              } catch (e: any) {
+                alert(e?.response?.data?.message || e?.message || 'Failed to load campaigns')
+              }
+            }}
+            className="btn-primary"
+          >
+            View Active Campaigns
+          </button>
+
+          {showDropdown && (
+            <DropdownPanel
+              campaigns={(displayedCampaigns ?? [])}
+              campaignBalances={campaignBalances}
+              price={price}
+              onClose={() => setShowDropdown(false)}
+            />
+          )}
+        </div>
       </div>
 
       {/* If summary includes campaigns, show them with donor totals */}
       {Array.isArray(summary?.campaigns) && (
         <section>
-          <h2 className="text-xl font-semibold mb-3">My Campaigns</h2>
+          <div className="flex items-center justify-between">
+            <h2 id="my-campaigns" className="text-xl font-semibold mb-3">My Campaigns</h2>
+            <div className="flex items-center gap-2">
+              {/* Placeholder for actions */}
+            </div>
+          </div>
           <div className="space-y-3">
-            {summary.campaigns.map((c: any) => (
+            {(displayedCampaigns ?? summary.campaigns).map((c: any) => (
               <div key={c.id} className="card p-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -127,7 +195,7 @@ export default function CharityDashboard() {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
-                    <a href={`/campaign/${c.id}`} className="btn-ghost">View</a>
+            <a href={`/campaign/${c.id}`} className="btn-ghost">View</a>
                     <RequestWithdrawalButton campaign={c} />
                   </div>
                 </div>
@@ -144,9 +212,10 @@ export default function CharityDashboard() {
                     </ul>
                   </div>
                 )}
-              </div>
+                </div>
             ))}
           </div>
+          {/* raw debug removed - dropdown provides a readable list */}
         </section>
       )}
 
@@ -154,39 +223,51 @@ export default function CharityDashboard() {
       <section>
         <h2 className="text-xl font-semibold mb-3">All Donations</h2>
         <div className="space-y-3">
-          {(() => {
-            // Prefer backend-provided flat donations list if present
-            const flat: any[] = Array.isArray(summary?.donations)
-              ? summary.donations
-              : // otherwise aggregate donations from each campaign
-                (Array.isArray(summary?.campaigns) ? summary.campaigns.flatMap((c: any) => Array.isArray(c.donations) ? c.donations.map((d: any) => ({ ...d, campaignTitle: c.title, campaignId: c.id })) : []) : [])
-
-            if (!flat || flat.length === 0) return <div className="text-sm subtle">No donations yet</div>
-
-            // sort newest first
-            flat.sort((a, b) => (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
-
-            return (
-              <div className="card p-4">
-                <ul className="space-y-2 text-sm">
-                  {flat.map((d: any) => (
-                    <li key={d.id || `${d.transactionHash}-${d.createdAt}`} className="flex justify-between items-start">
-                        <div className="max-w-lg">
-                          <div className="font-medium">{d.donorName ?? d.from ?? d.wallet ?? 'Anonymous'}</div>
-                          <div className="subtle text-xs">{formatDateHuman(d.createdAt)} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
-                        </div>
-                      <div className="text-right">
-                        <div className="font-semibold">{formatINR((Number(d.amount) || 0) * price, 0)}</div>
-                        <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">{d.transactionHash}</a> : <span className="subtle">—</span>}</div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )
-          })()}
+          <DonationsTable donations={allDonations} loading={!donationsData && donationsLoading} />
         </div>
       </section>
+    </div>
+  )
+}
+
+function DropdownPanel({ campaigns, campaignBalances, price, onClose }: { campaigns: any[], campaignBalances: Record<string, number>, price: number, onClose: () => void }) {
+  return (
+    <div className="absolute right-0 mt-2 w-[28rem] z-50" onMouseLeave={() => onClose()}>
+      <div className="card p-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-medium">Active campaigns</div>
+          <button onClick={onClose} className="text-sm btn-ghost">Close</button>
+        </div>
+        <div className="space-y-2 max-h-72 overflow-auto">
+          {(!campaigns || campaigns.length === 0) && <div className="text-sm subtle">No active campaigns</div>}
+          {campaigns.map((c: any) => {
+            const balEth = Number(campaignBalances[String(c.id)] ?? 0)
+            const raisedInr = Number(c?.raised ?? 0) || (balEth * price) || 0
+            const goalInr = Number(c?.goalFiat ?? 0) || (Number(c?.goalAmount ?? c?.goal ?? 0) * price) || 0
+            const pct = !goalInr || goalInr <= 0 ? 0 : Math.min(100, Math.round((raisedInr / goalInr) * 100))
+            return (
+              <div key={c.id} className="p-2 border border-black/5 rounded">
+                <div className="flex items-start justify-between">
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{c.title}</div>
+                    <div className="text-sm subtle">Raised: {formatINR(raisedInr, 0)}</div>
+                    <div className="text-sm subtle">Goal: {goalInr ? formatINR(goalInr, 0) : '—'}</div>
+                    <div className="mt-2">
+                      <div className="w-full bg-black/5 rounded-full h-2 overflow-hidden">
+                        <div className="h-2 bg-gradient-to-r from-brand-500 to-emerald-500" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="text-xs subtle mt-1">{pct}% funded</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-2 ml-3">
+                    <a href={`/campaign/${c.id}#donations`} className="btn-ghost text-sm">Open donors</a>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
@@ -331,6 +412,7 @@ function RequestWithdrawalButton({ campaign }: { campaign: any }) {
               <label className="block text-sm mb-1">Amount (ETH)</label>
               <input value={amount} onChange={e => setAmount(e.target.value)} className="input" placeholder="0.5" />
             </div>
+
             <div>
               <label className="block text-sm mb-1">Purpose</label>
               <input value={purpose} onChange={e => setPurpose(e.target.value)} className="input" placeholder="Purpose for withdrawal" />

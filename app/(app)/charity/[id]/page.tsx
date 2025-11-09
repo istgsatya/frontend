@@ -6,6 +6,7 @@ import { fetchEthPrice } from '@/lib/price'
 import { useParams } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import Link from 'next/link'
+import { useAuthStore } from '@/lib/store/auth'
 
 export default function CharityProfile() {
   const params = useParams<{ id: string }>()
@@ -14,10 +15,12 @@ export default function CharityProfile() {
   const [posts, setPosts] = useState<any[]>([])
   const [campaigns, setCampaigns] = useState<any[]>([])
   const [charityCampaigns, setCharityCampaigns] = useState<any[]>([])
+  const [campaignBalances, setCampaignBalances] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'social' | 'campaigns'>('social')
   const [price, setPrice] = useState<number>(0)
+  const user = useAuthStore(s => s.user)
   const list = { hidden: {}, show: { transition: { staggerChildren: 0.06 } } }
   const item = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: { duration: 0.25 } } }
 
@@ -44,7 +47,27 @@ export default function CharityProfile() {
         setPosts(p)
 
         // Set the dedicated charity campaigns (from new endpoint). Ensure we have an array.
-        setCharityCampaigns(Array.isArray(cc) ? cc : [])
+        const campaignsList = Array.isArray(cc) ? cc : []
+        setCharityCampaigns(campaignsList)
+
+        // Immediately fetch on-chain balances for each campaign (source of truth)
+        if (campaignsList.length > 0) {
+          try {
+            const balancePromises = campaignsList.map((c: any) =>
+              api.get(`/campaigns/${c.id}/balance`).then(r => ({ id: c.id, balance: Number(r.data?.balance ?? r.data ?? 0) }))
+            )
+            const settled = await Promise.allSettled(balancePromises)
+            const balancesMap: Record<string, number> = {}
+            for (const s of settled) {
+              if (s.status === 'fulfilled') {
+                balancesMap[String(s.value.id)] = Number(s.value.balance ?? 0)
+              }
+            }
+            setCampaignBalances(balancesMap)
+          } catch (e) {
+            // ignore per-campaign balance fetch errors here
+          }
+        }
 
         // Backwards-compatible: existing 'campaigns' state is still populated from
         // the public DTO or a fallback query. Prefer the explicit campaigns list
@@ -80,7 +103,29 @@ export default function CharityProfile() {
         ])
         if (!mounted) return
         if (d) setDetail(d)
-        setCharityCampaigns(Array.isArray(cc) ? cc : [])
+        const campaignsList = Array.isArray(cc) ? cc : []
+        setCharityCampaigns(campaignsList)
+
+        // Refresh balances for visible campaigns (keep campaignBalances keyed by id)
+        if (campaignsList.length > 0) {
+          try {
+            const balancePromises = campaignsList.map((c: any) =>
+              api.get(`/campaigns/${c.id}/balance`).then(r => ({ id: c.id, balance: Number(r.data?.balance ?? r.data ?? 0) }))
+            )
+            const settled = await Promise.allSettled(balancePromises)
+            const balancesMap: Record<string, number> = {}
+            for (const s of settled) {
+              if (s.status === 'fulfilled') {
+                balancesMap[String(s.value.id)] = Number(s.value.balance ?? 0)
+              }
+            }
+            setCampaignBalances(balancesMap)
+          } catch (e) {
+            // ignore
+          }
+        } else {
+          setCampaignBalances({})
+        }
       } catch (e) {
         // ignore transient errors during polling
       }
@@ -98,6 +143,17 @@ export default function CharityProfile() {
       clearInterval(iv)
     }
   }, [id])
+
+  // Compute total raised in INR using on-chain balances as the source of truth.
+  const totalRaised = (() => {
+    try {
+      // Sum all campaign balances (assumed ETH) and convert to INR using price
+      const sumEth = Object.values(campaignBalances || {}).reduce((s, v) => s + (Number(v) || 0), 0)
+      return (price && sumEth) ? (sumEth * price) : 0
+    } catch {
+      return 0
+    }
+  })()
 
   useEffect(() => {
     // fetch INR price for ETH so we can display fiat values for campaign goals/raised when needed
@@ -117,10 +173,7 @@ export default function CharityProfile() {
     return (price && ethVal) ? (ethVal * price) : 0
   }
 
-  // compute total raised across campaigns created by this charity (sum of per-campaign raised)
-  const totalRaised = (Array.isArray(charityCampaigns) ? charityCampaigns.reduce((sum: number, c: any) => {
-    return sum + getRaisedInr(c)
-  }, 0) : 0)
+  // NOTE: totalRaised is now computed from on-chain per-campaign balances (campaignBalances)
 
   return (
     <div className="container py-6 space-y-8">
@@ -163,16 +216,25 @@ export default function CharityProfile() {
           {Array.isArray(charityCampaigns) && charityCampaigns.length > 0 ? (
             <motion.div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3" variants={list} initial="hidden" whileInView="show" viewport={{ once: true }}>
               {charityCampaigns.map((c: any) => {
-                const raisedInr = getRaisedInr(c)
+                // Prefer on-chain balance (ETH) from campaignBalances, convert to INR using price.
+                const balEth = campaignBalances?.[String(c.id)]
+                const raisedInr = (balEth != null && price) ? (Number(balEth) * price) : getRaisedInr(c)
                 const goalInr = c?.goalFiat
                   ? Number(c.goalFiat)
                   : (Number(c?.goalAmount ?? c?.targetAmount ?? c?.goal ?? 0) * (price || 0))
-                return (
-                  <motion.a key={c.id} variants={item} href={`/campaign/${c.id}`} className="card p-5 transition-all hover:-translate-y-0.5 hover:shadow-glass">
+                  const isAdminForThisCharity = !!(user && (user as any).roles?.includes?.('ROLE_CHARITY_ADMIN') && String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(detail?.id))
+                  const href = isAdminForThisCharity ? '/dashboard/charity' : `/campaign/${c.id}`
+                  return (
+                    <motion.a key={c.id} variants={item} href={href} className="card p-5 transition-all hover:-translate-y-0.5 hover:shadow-glass">
                     <div className="font-medium">{c.title}</div>
                     <div className="text-sm subtle mt-2">{c.summary || c.description}</div>
                     <div className="mt-3 text-sm subtle">Raised: {formatINR(Number(raisedInr) || 0, 0)}</div>
-                    <div className="text-sm subtle">Goal: {goalInr ? formatINR(Number(goalInr) || 0, 0) : '—'}</div>
+                        <div className="text-sm subtle">Goal: {goalInr ? formatINR(Number(goalInr) || 0, 0) : '—'}</div>
+                        {goalInr && raisedInr >= goalInr && (
+                          <div className="mt-3 px-3 py-2 rounded-md bg-emerald-900/30 text-emerald-200 border border-emerald-700 text-sm font-medium">
+                            🎉 Goal reached — thank you! This campaign has met its target.
+                          </div>
+                        )}
                   </motion.a>
                 )
               })}

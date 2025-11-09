@@ -1,7 +1,8 @@
 "use client"
-import { ReactNode, useEffect, useState } from 'react'
+import { ReactNode, useEffect, useState, useRef } from 'react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth'
+import { useRouter } from 'next/navigation'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const setAccessToken = useAuthStore(s => s.setAccessToken)
@@ -9,6 +10,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setAuthLoading = useAuthStore(s => s.setAuthLoading)
   const logout = useAuthStore(s => s.logout)
   const [ready, setReady] = useState(false)
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated)
+  const router = useRouter()
+  const prevAuthedRef = useRef<boolean | null>(null)
+
+  useEffect(() => {
+    // Redirect to home only when authentication transitions from false -> true
+    // and after bootstrap has completed (ready === true). This avoids racing
+    // the rest of the app which depends on the global auth state.
+    if (ready && isAuthenticated && prevAuthedRef.current !== true) {
+      try {
+        router.replace('/')
+      } catch {}
+    }
+    prevAuthedRef.current = isAuthenticated
+  }, [isAuthenticated, ready, router])
 
   useEffect(() => {
     let cancelled = false
