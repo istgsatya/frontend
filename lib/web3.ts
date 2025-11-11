@@ -56,6 +56,14 @@ export async function getContract() {
   return new Contract(address, abi as any, signer)
 }
 
+// Read-only contract instance that does NOT prompt the wallet for permissions
+export async function getReadOnlyContract() {
+  const provider = getProvider()
+  const address = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS
+  if (!provider || !address) throw new Error('Contract not configured. Please set NEXT_PUBLIC_CONTRACT_ADDRESS and ABI.')
+  return new Contract(address, abi as any, provider)
+}
+
 /**
  * Ensure the user's wallet is connected to Sepolia testnet (chainId 11155111).
  * Attempts to switch the chain programmatically via the provider. If the chain

@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useMemo, useState } from 'react'
-import { mutate } from 'swr'
+import useSWR, { mutate } from 'swr'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/lib/store/auth'
 import { useParams } from 'next/navigation'
@@ -8,18 +8,20 @@ import { fetchEthPrice, fiatToEth } from '@/lib/price'
 import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
 import { getContract, getSigner, getProvider, ensureSepolia } from '@/lib/web3'
 import { parseEther } from 'ethers'
+import WithdrawalRequestCard from '@/components/WithdrawalRequestCard'
 import { motion } from 'framer-motion'
 
 export default function CampaignDetail() {
   const params = useParams() as { id: string }
   const id = params?.id
+  const fetcher = (url: string) => api.get(url).then(r => r.data)
   const [campaign, setCampaign] = useState<any>(null)
   const [withdrawals, setWithdrawals] = useState<any[]>([])
   const [donations, setDonations] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [balance, setBalance] = useState<number | null>(null)
   const [amountFiat, setAmountFiat] = useState('')
-  const [price, setPrice] = useState<number>(0)
+  const [ethToInrRate, setEthToInrRate] = useState<number>(0)
   const [wallet, setWallet] = useState<string | null>(null)
   const [hasVotedMap, setHasVotedMap] = useState<Record<string, boolean>>({})
   const [onChainVotes, setOnChainVotes] = useState<Record<string, { for: string; against: string }>>({})
@@ -32,23 +34,21 @@ export default function CampaignDetail() {
   // component has mounted on the client.
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
-  const ethAmount = useMemo(() => fiatToEth(parseFloat(amountFiat || '0'), price), [amountFiat, price])
+  
 
-  // Initial parallel data fetch: campaign metadata, on-chain balance, withdrawals, donations
+  // Initial parallel data fetch: campaign metadata, on-chain balance, donations (withdrawals handled by SWR below)
   useEffect(() => {
     let mounted = true
     ;(async () => {
       try {
-        const [cRes, bRes, wRes, dRes] = await Promise.allSettled([
+        const [cRes, bRes, dRes] = await Promise.allSettled([
           api.get(`/campaigns/${id}`),
           api.get(`/campaigns/${id}/balance`),
-          api.get(`/campaigns/${id}/withdrawals`),
           api.get(`/campaigns/${id}/donations`),
         ])
         if (!mounted) return
         if (cRes.status === 'fulfilled') setCampaign(cRes.value.data)
         if (bRes.status === 'fulfilled') setBalance(Number(bRes.value.data?.balance ?? 0))
-        if (wRes.status === 'fulfilled') setWithdrawals(wRes.value.data)
         if (dRes.status === 'fulfilled') setDonations(dRes.value.data)
       } catch (e) {
         // swallow; individual call results handled above
@@ -57,24 +57,29 @@ export default function CampaignDetail() {
       }
     })()
   // fetch a live price to allow quick ETH preview and convert Raised -> INR
-  fetchEthPrice('inr').then(setPrice).catch(() => setPrice(0))
+  fetchEthPrice('inr').then(setEthToInrRate).catch(() => setEthToInrRate(0))
     return () => { mounted = false }
   }, [id])
 
-  // Poll for live updates every 7 seconds
+  // SWR for withdrawals with 7s refresh to keep ledger live
+  // Backend withdrawals list: slower cadence (15s) per spec; on-chain tallies handled inside each card.
+  const { data: withdrawalsData, mutate: mutateWithdrawals } = useSWR(id ? `/campaigns/${id}/withdrawals` : null, fetcher, { refreshInterval: 15000 })
+  useEffect(() => {
+    if (Array.isArray(withdrawalsData)) setWithdrawals(withdrawalsData)
+  }, [withdrawalsData])
+
+  // Poll for live updates every 7 seconds for other resources
   useEffect(() => {
     const iv = setInterval(async () => {
       try {
         // Refresh campaign metadata, balance, withdrawals, donations in parallel
-        const [cRes, bRes, wRes, dRes] = await Promise.allSettled([
+        const [cRes, bRes, dRes] = await Promise.allSettled([
           api.get(`/campaigns/${id}`).then(r => r.data),
           api.get(`/campaigns/${id}/balance`).then(r => r.data?.balance),
-          api.get(`/campaigns/${id}/withdrawals`).then(r => r.data),
           api.get(`/campaigns/${id}/donations`).then(r => r.data),
         ])
   if (cRes.status === 'fulfilled') setCampaign(cRes.value)
   if (bRes.status === 'fulfilled') setBalance(Number(bRes.value ?? 0))
-        if (wRes.status === 'fulfilled') setWithdrawals(wRes.value)
         if (dRes.status === 'fulfilled') setDonations(dRes.value)
       } catch {}
     }, 7000)
@@ -85,10 +90,11 @@ export default function CampaignDetail() {
   useEffect(() => {
     if (!amountFiat) return
     const t = setTimeout(() => {
-      fetchEthPrice('inr').then(setPrice).catch(() => {})
+      fetchEthPrice('inr').then(setEthToInrRate).catch(() => {})
     }, 300)
     return () => clearTimeout(t)
   }, [amountFiat])
+  const ethAmount = useMemo(() => fiatToEth(parseFloat(amountFiat || '0'), ethToInrRate), [amountFiat, ethToInrRate])
 
   // Listen for withdrawal refresh events from WithdrawalRequestCard and update list
   useEffect(() => {
@@ -310,7 +316,7 @@ export default function CampaignDetail() {
           <div className="flex-1">
             <AnimatedProgress goal={campaign?.goal} raised={balance ?? Number(campaign?.amountRaised ?? 0)} />
           </div>
-          <div className="text-sm subtle w-40 text-right">Raised: {typeof balance === 'number' ? formatINR((balance ?? 0) * price, 0) : formatINR(0, 0)} </div>
+          <div className="text-sm subtle w-40 text-right">Raised: {typeof balance === 'number' ? formatINR((balance ?? 0) * ethToInrRate, 0) : formatINR(0, 0)} </div>
         </div>
         <div className="card mt-4 p-4 space-y-3">
           <div className="text-sm text-slate-700">Enter amount (INR)</div>
@@ -372,7 +378,7 @@ export default function CampaignDetail() {
                   // Resolve donation amounts robustly: server may provide fiat or ETH fields
                   const ethAmt = Number(d?.amount ?? d?.amountEth ?? d?.value ?? 0)
                   const serverFiat = Number(d?.amountFiat ?? d?.amountInr ?? d?.fiatAmount ?? 0)
-                  const inrValue = (serverFiat && serverFiat > 0) ? serverFiat : ((price && ethAmt) ? ethAmt * price : 0)
+                  const inrValue = (serverFiat && serverFiat > 0) ? serverFiat : ((ethToInrRate && ethAmt) ? ethAmt * ethToInrRate : 0)
                   return (
                     <li key={d.id || d.transactionHash} className="flex justify-between items-start">
                       <div className="max-w-lg">
@@ -382,6 +388,7 @@ export default function CampaignDetail() {
                       <div className="text-right">
                         <div className="font-semibold">{formatINR(Number(inrValue) || 0, 0)}</div>
                         {ethAmt ? <div className="text-xs subtle mt-1">≈ {typeof ethAmt === 'number' ? formatEth(ethAmt, 6) : ethAmt} ETH</div> : null}
+                        {ethAmt ? <div className="text-xs subtle mt-1">{formatEth(ethAmt, 6)} • ≈ {formatINR(ethAmt * (ethToInrRate || 0), 0)}</div> : null}
                         <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">View on Etherscan</a> : <span className="subtle">—</span>}</div>
                       </div>
                     </li>
@@ -400,51 +407,13 @@ export default function CampaignDetail() {
         <div className="space-y-3">
           {Array.isArray(withdrawals) && withdrawals.length > 0 ? (
             withdrawals.map((w) => (
-              <WithdrawalRequestCard key={w.id} withdrawal={w} onVote={vote} onRefresh={async () => {
-                try {
-                  const w2 = await api.get(`/campaigns/${id}/withdrawals`).then(r => r.data)
-                  setWithdrawals(w2)
-                } catch {}
-              }} />
+              <WithdrawalRequestCard key={w.id} request={w} />
             ))
           ) : (
             <div className="text-sm subtle">No withdrawal requests have been made yet.</div>
           )}
         </div>
       </section>
-    </div>
-  )
-}
-
-function WithdrawalRequestCard({ withdrawal, onVote, onRefresh }: { withdrawal: any; onVote: (id: any, approve: boolean) => void; onRefresh: () => void }) {
-  const status = withdrawal.status
-  const badge = status === 'EXECUTED' ? 'bg-emerald-100 text-emerald-800' : status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-  return (
-    <div className="card p-4" key={withdrawal.id}>
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="font-medium">{withdrawal.purpose}</div>
-          <div className="text-sm subtle">Amount: {formatEth(withdrawal.amount, 6)}</div>
-          <div className="text-sm">Status: <span className={`px-2 py-1 rounded-full text-xs ${badge}`}>{status}</span></div>
-          <div className="text-xs subtle mt-1">Submitted: {formatDateHuman(withdrawal.createdAt)}</div>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          {withdrawal.status === 'PENDING_VOTE' && (new Date(withdrawal.votingDeadline).getTime() || 0) > Date.now() && (
-            <div className="flex gap-2">
-              <button onClick={() => onVote(withdrawal.id, true)} className="btn bg-emerald-600 hover:bg-emerald-700 text-white">Approve</button>
-              <button onClick={() => onVote(withdrawal.id, false)} className="btn bg-rose-600 hover:bg-rose-700 text-white">Reject</button>
-            </div>
-          )}
-          <div className="flex gap-2">
-            {withdrawal.financialProofUrl && (
-              <a href={`http://localhost:8080/uploads/${withdrawal.financialProofUrl}`} target="_blank" rel="noreferrer" className="btn-ghost text-sm">View Financial Proof</a>
-            )}
-            {withdrawal.visualProofUrl && (
-              <a href={`http://localhost:8080/uploads/${withdrawal.visualProofUrl}`} target="_blank" rel="noreferrer" className="btn-ghost text-sm">View Visual Proof</a>
-            )}
-          </div>
-        </div>
-      </div>
     </div>
   )
 }

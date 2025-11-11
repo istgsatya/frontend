@@ -7,7 +7,9 @@ import { useRouter } from 'next/navigation'
 import CountUp from 'react-countup'
 import { fetchEthPrice, fiatToEth } from '@/lib/price'
 import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
-import DonationsTable from '@/components/DonationsTable'
+import { createPortal } from 'react-dom'
+// DonationsTable removed — donation history is linked separately
+import { WalletPromptBanner } from '@/components/WalletPromptBanner'
 
 const fetcher = (url: string) => api.get(url).then(r => r.data)
 
@@ -33,13 +35,7 @@ export default function CharityDashboard() {
   }, [user, router])
 
   const { data: summary } = useSWR(user ? '/dashboard/charity' : null, fetcher, { refreshInterval: 7000 })
-  // fetch all donations for this charity (protected route) and keep them live
-  const { data: donationsData, isValidating: donationsLoading } = useSWR(user ? '/charities/me/donations' : null, fetcher, { refreshInterval: 7000 })
-  const [allDonations, setAllDonations] = useState<any[]>([])
-
-  useEffect(() => {
-    if (Array.isArray(donationsData)) setAllDonations(donationsData)
-  }, [donationsData])
+  // (donation history link provided below) — detailed donation history is on its own page
   // When campaigns are present, fetch on-chain balances for each and compute a real total
   useEffect(() => {
     if (!summary) return
@@ -94,15 +90,29 @@ export default function CharityDashboard() {
 
   return (
     <div className="container py-6 space-y-8">
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card title="Active Campaigns" value={summary?.activeCampaigns ?? 0} />
-        <Card title="Pending Withdrawals" value={summary?.pendingWithdrawals ?? 0} />
-      </section>
+      {/* Top summary: Total Raised + primary CTA */}
+      <div className="card p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div>
+          <div className="text-sm subtle">Total raised (real-time)</div>
+          <div className="text-3xl font-extrabold mt-1">{formatINR(totalRaisedReal, 0)}</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <a href="/dashboard/charity/treasury" className="btn-primary text-lg">Manage Funds</a>
+          <div className="flex items-center gap-2">
+            <CreateCampaignButton />
+            <CreatePostButton />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end">
+        <a href="/dashboard/charity/donations" className="text-sm underline subtle">View full donation history</a>
+      </div>
 
       <div className="card p-4 flex flex-col sm:flex-row gap-3">
-        <CreateCampaignButton />
-        <CreatePostButton />
-        <div className="ml-auto relative">
+        {/* Wallet prompt (renders only when user is authed and has no wallets) */}
+        <WalletPromptBanner />
+        <div className="ml-auto relative z-[9999]">
           <button
             onClick={async () => {
               try {
@@ -194,9 +204,9 @@ export default function CharityDashboard() {
                       })()}
                     </div>
                   </div>
-                  <div className="flex flex-col items-end gap-2">
-            <a href={`/campaign/${c.id}`} className="btn-ghost">View</a>
-                    <RequestWithdrawalButton campaign={c} />
+      <div className="flex flex-col items-end gap-2">
+    <a href={`/campaign/${c.id}`} className="btn-ghost">View</a>
+        <RequestWithdrawalButton campaign={c} user={user} />
                   </div>
                 </div>
                     {Array.isArray(c.donations) && (
@@ -223,7 +233,7 @@ export default function CharityDashboard() {
       <section>
         <h2 className="text-xl font-semibold mb-3">All Donations</h2>
         <div className="space-y-3">
-          <DonationsTable donations={allDonations} loading={!donationsData && donationsLoading} />
+          <div className="card p-4">For full donation history, <a href="/dashboard/charity/donations" className="underline text-brand-700">click here</a>.</div>
         </div>
       </section>
     </div>
@@ -231,8 +241,9 @@ export default function CharityDashboard() {
 }
 
 function DropdownPanel({ campaigns, campaignBalances, price, onClose }: { campaigns: any[], campaignBalances: Record<string, number>, price: number, onClose: () => void }) {
-  return (
-    <div className="absolute right-0 mt-2 w-[28rem] z-50" onMouseLeave={() => onClose()}>
+  // Render a portal to body so the dropdown is never clipped by parent overflow/stacking contexts
+  const el = (
+    <div className="fixed top-20 right-6 w-[28rem] z-[99999]" onMouseLeave={() => onClose()}>
       <div className="card p-3">
         <div className="flex items-center justify-between mb-2">
           <div className="font-medium">Active campaigns</div>
@@ -270,6 +281,9 @@ function DropdownPanel({ campaigns, campaignBalances, price, onClose }: { campai
       </div>
     </div>
   )
+
+  if (typeof document === 'undefined') return null
+  return createPortal(el, document.body)
 }
 
 function Card({ title, value, price }: { title: string, value: number, price?: number }) {
@@ -361,44 +375,71 @@ function CreatePostButton() {
   )
 }
 
-function RequestWithdrawalButton({ campaign }: { campaign: any }) {
+function RequestWithdrawalButton({ campaign, user }: { campaign: any, user: any }) {
   const [open, setOpen] = useState(false)
   const [amount, setAmount] = useState('')
   const [purpose, setPurpose] = useState('')
   const [vendorAddress, setVendorAddress] = useState('')
-  const [file, setFile] = useState<File | null>(null)
+  const [financialFile, setFinancialFile] = useState<File | null>(null)
+  const [visualFile, setVisualFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
+  const hasWallet = Array.isArray(user?.wallets) && user.wallets.length > 0
+
   async function submit() {
-    if (!amount || !purpose || !vendorAddress) return alert('Please provide amount, purpose and vendor address')
+    if (!amount || !purpose || !vendorAddress) {
+      alert('Please provide amount, purpose and vendor address')
+      return
+    }
+    if (!financialFile || !visualFile) {
+      alert('Please upload both Financial Proof and Visual Proof files')
+      return
+    }
     setLoading(true)
     try {
       const fd = new FormData()
-      // The backend expects a JSON part named 'request' and a file part 'financialProof'
+      // The backend expects a JSON part named 'request' and file parts 'financialProof' and 'visualProof'
       const requestPayload = {
         campaignId: campaign.id,
-        amount,
+        amount: String(amount),
         purpose,
         vendorAddress
       }
       fd.append('request', new Blob([JSON.stringify(requestPayload)], { type: 'application/json' }))
-      if (file) fd.append('financialProof', file)
+      fd.append('financialProof', financialFile)
+      fd.append('visualProof', visualFile)
       // Post to canonical withdrawals endpoint
       await api.post(`/withdrawals`, fd)
-      alert('Withdrawal request submitted')
+      // Success feedback per spec
       setOpen(false)
       setAmount('')
       setPurpose('')
       setVendorAddress('')
-      setFile(null)
-      // refresh the page data
+      setFinancialFile(null)
+      setVisualFile(null)
       try { router.refresh() } catch {}
+      alert('Request submitted! It is now live for donor voting.')
     } catch (e: any) {
-      alert(e?.response?.data?.message || e?.message || 'Failed')
+      // On failure, close modal and show backend message if available
+      setOpen(false)
+      const backendMsg = e?.response?.data?.message
+      const msg = backendMsg || e?.message || 'Failed to submit withdrawal request'
+      alert(msg)
+      try { router.refresh() } catch {}
     } finally {
       setLoading(false)
     }
+  }
+
+  // If the charity admin has no registered wallets, the action must be disabled and
+  // the global WalletPromptBanner (rendered at the top of the page) will guide them.
+  if (!hasWallet) {
+    return (
+      <div className="flex flex-col items-end gap-2">
+        <button disabled className="btn-outline text-xs opacity-50 cursor-not-allowed" title="Register a payout wallet to request withdrawals">Request Withdrawal</button>
+      </div>
+    )
   }
 
   return (
@@ -406,8 +447,9 @@ function RequestWithdrawalButton({ campaign }: { campaign: any }) {
       <button onClick={() => setOpen(true)} className="btn-outline text-xs">Request Withdrawal</button>
       {open && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="card w-full max-w-md p-6 space-y-4">
+          <div className="card w-full max-w-lg p-6 space-y-4">
             <h3 className="text-lg font-semibold">Request Withdrawal — {campaign.title}</h3>
+
             <div>
               <label className="block text-sm mb-1">Amount (ETH)</label>
               <input value={amount} onChange={e => setAmount(e.target.value)} className="input" placeholder="0.5" />
@@ -415,19 +457,27 @@ function RequestWithdrawalButton({ campaign }: { campaign: any }) {
 
             <div>
               <label className="block text-sm mb-1">Purpose</label>
-              <input value={purpose} onChange={e => setPurpose(e.target.value)} className="input" placeholder="Purpose for withdrawal" />
+              <textarea value={purpose} onChange={e => setPurpose(e.target.value)} className="input" rows={3} placeholder="Clear purpose for the funds (e.g., Purchase of 50 blankets)" />
             </div>
+
             <div>
-              <label className="block text-sm mb-1">Vendor Address</label>
+              <label className="block text-sm mb-1">Vendor / Recipient Address (0x...)</label>
               <input value={vendorAddress} onChange={e => setVendorAddress(e.target.value)} className="input" placeholder="0x..." />
             </div>
+
             <div>
-              <label className="block text-sm mb-1">Financial Proof (optional)</label>
-              <input type="file" onChange={e => setFile(e.target.files?.[0] ?? null)} className="block text-sm" />
+              <label className="block text-sm mb-1">Upload Financial Proof (Invoice, Quote, etc.)</label>
+              <input type="file" onChange={e => setFinancialFile(e.target.files?.[0] ?? null)} className="block text-sm" />
             </div>
+
+            <div>
+              <label className="block text-sm mb-1">Upload Visual Proof (Photo of the need, e.g., 'the injured dog')</label>
+              <input type="file" onChange={e => setVisualFile(e.target.files?.[0] ?? null)} className="block text-sm" />
+            </div>
+
             <div className="flex justify-end gap-2">
               <button onClick={() => setOpen(false)} className="btn-ghost">Cancel</button>
-              <button onClick={submit} disabled={loading} className="btn-primary disabled:opacity-60">{loading ? 'Submitting...' : 'Submit'}</button>
+              <button onClick={submit} disabled={loading} className="btn-primary disabled:opacity-60">{loading ? 'Submitting...' : 'Submit Request for Voting'}</button>
             </div>
           </div>
         </div>
