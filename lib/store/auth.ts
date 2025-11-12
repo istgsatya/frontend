@@ -28,10 +28,11 @@ type AuthState = {
 export const useAuthStore = create<AuthState>()(
   persist(
     (set) => ({
-      accessToken: null,
-      user: null,
-      isAuthenticated: false,
-      authLoading: false,
+  accessToken: null,
+  user: null,
+  isAuthenticated: false,
+  // Start true until AuthProvider finishes initial /auth/me check
+  authLoading: true,
       login: (token, user) => set({ accessToken: token, user, isAuthenticated: true }),
       logout: () => set({ accessToken: null, user: null, isAuthenticated: false }),
       setUser: (user) => set({ user }),

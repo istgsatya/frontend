@@ -3,24 +3,36 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { ethers } from 'ethers'
 import { getContract, getSigner } from '@/lib/web3'
 import { api } from '@/lib/api'
+import useSWR, { mutate } from 'swr'
 import useCountdown from '@/lib/hooks/useCountdown'
 import useOnChainVoteData from '@/lib/hooks/useOnChainVoteData'
 import { useAuthStore } from '@/lib/store/auth'
 import { getReadOnlyContract } from '@/lib/web3'
 import { formatINR, formatEth } from '@/lib/format'
 import { useEthPrice } from './EthPriceProvider'
+import { usePathname } from 'next/navigation'
+import { parseISO, format as formatDate } from 'date-fns'
 
 interface VoteCounts { for: string; against: string }
 
-export default function WithdrawalRequestCard({ request }: { request: any }) {
+export default function WithdrawalRequestCard({ request, donations, isLoadingDonations }: { request: any, donations?: any[], isLoadingDonations?: boolean }) {
   const [voting, setVoting] = useState(false)
   const [hasAlreadyVoted, setHasAlreadyVoted] = useState<boolean>(false)
   const [isEligibleVoter, setIsEligibleVoter] = useState<boolean>(false)
+  const [isLoading, setIsLoading] = useState<boolean>(false)
   const [deadlineMs, setDeadlineMs] = useState<number>(0)
   const { user, isAuthenticated } = useAuthStore()
+  const authLoading = useAuthStore(state => state.authLoading)
+  const [debugHasDonated, setDebugHasDonated] = useState<any>(null)
+  const [lastCheckAt, setLastCheckAt] = useState<number | null>(null)
+  const [lastCheckMsg, setLastCheckMsg] = useState<string | null>(null)
+  const [donationsList, setDonationsList] = useState<any[] | null>(null)
 
   // Resolve on-chain request id
   const onChainRequestId = request?.onChainRequestId ?? request?.onChainId ?? request?.id
+
+  // Live on-chain vote counts (BigInt) fetched from a read-only contract
+  const [voteCounts, setVoteCounts] = useState<{ for: bigint; against: bigint }>({ for: 0n, against: 0n })
 
   // Fetch on-chain vote data via SWR polling (every 5s) and set deadline
   const { data: onChainData, isLoading: isLoadingVoteCount, mutate: mutateOnChain } = useOnChainVoteData(onChainRequestId)
@@ -32,6 +44,11 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
 
   // ETH->INR price from context (cached and refreshed periodically)
   const { price: ethPriceInInr, error: priceError } = useEthPrice()
+  const pathname = usePathname()
+  const isDev = process.env.NODE_ENV !== 'production'
+  // JWT from store (if present) for authenticated backend calls
+  const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
+  const authHeaders: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
 
   // Dedicated, faster polling for active votes: every 4s while pending
   useEffect(() => {
@@ -45,51 +62,182 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
     return () => { cancelled = true; if (iv) clearInterval(iv) }
   }, [request?.status, mutateOnChain])
 
-  // Eligibility: check once when card mounts.
-  // New policy: campaignContributions on-chain is unreliable; use backend proof-of-donation.
+  // Poll the blockchain every 5s for the authoritative vote counts and cache locally.
   useEffect(() => {
-    const checkEligibility = async () => {
+    let cancelled = false
+    const fetchVoteCounts = async () => {
       try {
-        const currentUserAddress = (useAuthStore as any).getState()?.user?.wallets?.[0]?.address
-        if (!isAuthenticated || !currentUserAddress) {
-          // Not logged in or no wallet registered
+        const readOnly = await getReadOnlyContract()
+        const reqId = BigInt(onChainRequestId ?? request?.id ?? 0)
+        if (!reqId || reqId === 0n) {
+          // nothing to fetch
+          setVoteCounts({ for: 0n, against: 0n })
+          setLastCheckMsg((s) => s ? s : 'NO_ONCHAIN_REQID')
+          return
+        }
+        const req = await readOnly.withdrawalRequests(reqId)
+        const votesFor = BigInt(req.votesFor?.toString?.() ?? '0')
+        const votesAgainst = BigInt(req.votesAgainst?.toString?.() ?? '0')
+        if (!cancelled) setVoteCounts({ for: votesFor, against: votesAgainst })
+      } catch (err) {
+        console.warn('fetchVoteCounts failed', err)
+      }
+    }
+    // initial fetch
+    fetchVoteCounts()
+    const iv = setInterval(() => { fetchVoteCounts() }, 5000)
+    return () => clearInterval(iv)
+  }, [onChainRequestId, request?.id])
+
+  // Ensure we know whether the current user already voted by probing the read-only contract
+  useEffect(() => {
+    let cancelled = false
+    const checkHasVoted = async () => {
+      try {
+        const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
+        const headers: Record<string,string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
+        const meRes = await fetch('http://localhost:8080/api/auth/me', { headers })
+        if (!meRes.ok) return
+        const me = await meRes.json()
+        const wallet = (me?.wallets && me.wallets[0]) || me?.walletAddress || null
+        if (!wallet) return
+        const readOnly = await getReadOnlyContract()
+        const reqId = BigInt(onChainRequestId ?? request?.id ?? 0)
+        if (!reqId || reqId === 0n) return
+        const voted = !!(await readOnly.hasVoted(reqId, wallet))
+        if (!cancelled) setHasAlreadyVoted(voted)
+      } catch (err) {
+        // ignore
+      }
+    }
+    checkHasVoted()
+    return () => { cancelled = true }
+  }, [onChainRequestId, request?.id, isAuthenticated])
+
+  // Eligibility: final authoritative check using backend proof-of-donation and on-chain hasVoted
+  // New eligibility flow per Satya Doctrine: use backend owner lookup for each donation
+  useEffect(() => {
+    // Simplified eligibility per your request:
+    // 1) Fetch /api/auth/me to get the logged-in user's wallet.
+    // 2) If user has a wallet, fetch /api/campaigns/{id}/donations and iterate donations.
+    // 3) For each donation, call /api/donations/owner/{txHash} and compare ownerAddress to the /auth/me wallet.
+    // 4) If any match, set isEligibleVoter=true. Do NOT perform any other checks (no on-chain hasVoted checks, no extra gating).
+    let cancelled = false
+
+    const checkEligibility = async () => {
+      setIsLoading(true)
+      try {
+  // fetch current user from backend explicitly, include JWT if available
+  const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
+  const headers: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
+  const meRes = await fetch('http://localhost:8080/api/auth/me', { headers })
+        if (!meRes.ok) {
+          setLastCheckAt(Date.now())
+          setLastCheckMsg('AUTH_ME_FAILED')
+          setIsEligibleVoter(false)
+          setHasAlreadyVoted(false)
+          return
+        }
+        const me = await meRes.json()
+        const currentUserWallet = (me?.wallets && me.wallets[0]) || me?.walletAddress || null
+        if (!currentUserWallet) {
+          setLastCheckAt(Date.now())
+          setLastCheckMsg('NO_WALLET_ON_AUTH_ME')
           setIsEligibleVoter(false)
           setHasAlreadyVoted(false)
           return
         }
 
-        // 1) Check on-chain whether the user has already voted (read-only, no wallet prompt)
-        let hasVotedResult = false
-        try {
-          const contract = await getReadOnlyContract()
-          const reqId = BigInt(onChainRequestId ?? request?.id ?? 0)
-          hasVotedResult = !!(await contract.hasVoted(reqId, currentUserAddress))
-        } catch {
-          hasVotedResult = false
+        // Determine campaign id: prefer request props, otherwise derive from current URL pathname
+        let campaignIdForCall: any = request?.campaign?.id ?? request?.campaignId
+        if (!campaignIdForCall && typeof pathname === 'string') {
+          // match /campaign/123 or /campaigns/123
+          const m = pathname.match(/\/campaigns?\/(\d+)(?:\/|$)/i)
+          if (m) {
+            campaignIdForCall = Number(m[1])
+            setLastCheckMsg(`DERIVED_CAMPAIGN_ID_FROM_PATH ${campaignIdForCall}`)
+          }
         }
-        setHasAlreadyVoted(!!hasVotedResult)
-
-        // 2) Ask our backend whether the logged-in user has a verified donation for this campaign
-        const campaignIdForCall = request?.campaign?.id ?? request?.campaignId ?? 0
-        try {
-          const res = await api.get(`/donations/has-donated/${campaignIdForCall}`)
-          const hasDonated = !!res?.data
-          setIsEligibleVoter(hasDonated)
-        } catch {
-          // If backend check fails, conservatively mark as ineligible
+        if (!campaignIdForCall) {
+          setLastCheckAt(Date.now())
+          setLastCheckMsg('NO_CAMPAIGN_ID')
           setIsEligibleVoter(false)
+          setHasAlreadyVoted(false)
+          return
         }
+
+        // Fetch donations from backend for this campaign
+  // Use the frontend proxy (port 3000) for donations count per request
+  const donationsRes = await fetch(`http://localhost:3000/api/campaigns/${campaignIdForCall}/donations`, { headers })
+        if (!donationsRes.ok) {
+          setLastCheckAt(Date.now())
+          setLastCheckMsg('DONATIONS_FETCH_FAILED')
+          setIsEligibleVoter(false)
+          setHasAlreadyVoted(false)
+          return
+        }
+  const donationsList = await donationsRes.json()
+  // Save locally for participation denominator and potential reuse
+  setDonationsList(Array.isArray(donationsList) ? donationsList : [])
+        if (!Array.isArray(donationsList) || donationsList.length === 0) {
+          setLastCheckAt(Date.now())
+          setLastCheckMsg('NO_DONATIONS')
+          setIsEligibleVoter(false)
+          setHasAlreadyVoted(false)
+          return
+        }
+
+        let verified = false
+        for (const donation of donationsList) {
+          if (cancelled) return
+          const txHash = donation?.transactionHash
+          if (!txHash) continue
+          try {
+            const ownerRes = await fetch(`http://localhost:8080/api/donations/owner/${txHash}`, { headers })
+            if (!ownerRes.ok) continue
+            const ownerJson = await ownerRes.json()
+            const ownerAddress = ownerJson?.ownerAddress
+            setLastCheckAt(Date.now())
+            setLastCheckMsg(`OWNER_LOOKUP ${txHash} -> ${ownerAddress}`)
+            if (ownerAddress && ownerAddress.toLowerCase() === String(currentUserWallet).toLowerCase()) {
+              verified = true
+              break
+            }
+          } catch (err) {
+            console.warn('owner lookup failed for', txHash, err)
+            continue
+          }
+        }
+
+        setIsEligibleVoter(verified)
+        // We explicitly do NOT query on-chain hasVoted here per your instruction
+        setHasAlreadyVoted(false)
       } catch (err) {
-        // Any unexpected error -> conservative defaults
+        console.error('simplified eligibility check failed', err)
+        setLastCheckAt(Date.now())
+        setLastCheckMsg('ERROR: simplified eligibility')
         setIsEligibleVoter(false)
         setHasAlreadyVoted(false)
+      } finally {
+        setIsLoading(false)
       }
     }
-    checkEligibility()
-  }, [onChainRequestId, request?.campaign, request?.campaignId, request?.id, isAuthenticated])
 
-  // Countdown hook based on deadlineMs; fallback to request.votingDeadline if deadlineMs not set
-  const rawDeadline = deadlineMs || (request?.votingDeadline ? new Date(request.votingDeadline).getTime() : 0)
+    checkEligibility()
+    return () => { cancelled = true }
+  }, [request?.campaign?.id, request?.campaignId])
+
+  // Countdown hook based on on-chain deadline when available; otherwise parse ISO from backend safely
+  const rawDeadline = (() => {
+    if (deadlineMs) return deadlineMs
+    const vd = request?.votingDeadline
+    if (!vd) return 0
+    try {
+      if (typeof vd === 'number') return vd > 1e12 ? vd : vd * 1000 // support seconds
+      if (typeof vd === 'string') return parseISO(vd).getTime()
+    } catch {}
+    return 0
+  })()
   const timeLeft = useCountdown(rawDeadline)
 
   async function handleVote(approve: boolean) {
@@ -99,18 +247,121 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
       const signer = await getSigner()
       const from = await signer?.getAddress()
       if (!from) throw new Error('Please connect your wallet')
-      const reqIdBig = BigInt(onChainRequestId)
+      // Ensure we pass a correct BigInt request id and log it for debugging
+      const reqIdBig = BigInt(onChainRequestId ?? request?.id ?? 0)
+      console.log(`Preparing to send ON-CHAIN VOTE for Request ID: ${reqIdBig}, Vote: ${approve}`)
+
+      // Pre-check on-chain request state to avoid sending a tx that will revert
+      try {
+        const readOnly = await getReadOnlyContract()
+        const onChainReq = await readOnly.withdrawalRequests(reqIdBig)
+        console.log('onChainReq before vote:', onChainReq)
+        // Try common deadline fields (some contracts store votingDeadline in seconds)
+        const deadlineSec = Number(onChainReq.votingDeadline ?? onChainReq.deadline ?? 0)
+        const nowSec = Math.floor(Date.now() / 1000)
+        if (deadlineSec && deadlineSec <= nowSec) {
+          setLastCheckMsg('PRECHECK: votingDeadline passed')
+          setVoting(false)
+          if (isDev) console.info('Voting inactive: deadline passed for request', reqIdBig)
+          return
+        }
+        // Optional: check a boolean/enum status field if present
+        const statusField = onChainReq.status ?? onChainReq.state ?? null
+        if (statusField && String(statusField).toLowerCase().includes('inactive')) {
+          setLastCheckMsg('PRECHECK: status inactive')
+          setVoting(false)
+          if (isDev) console.info('Voting inactive: status field indicates inactive for request', reqIdBig, statusField)
+          return
+        }
+      } catch (preErr) {
+        // If pre-check fails (read error), log but continue to attempt vote — however this is safer to abort
+        console.warn('pre-vote on-chain check failed', preErr)
+        setLastCheckMsg('PRECHECK_ERROR')
+        // proceed cautiously — let the contract handle reverts, but user will see error
+      }
+
+  if (isDev) console.log(`Sending ON-CHAIN VOTE for Request ID: ${reqIdBig}, Vote: ${approve}`)
       const tx = await contract.voteOnRequest(reqIdBig, approve)
       await tx.wait()
       // Refresh on-chain vote data
       try {
-        await mutateOnChain()
-        setHasAlreadyVoted(true)
+        // Immediately refresh our local vote counts and SWR-backed on-chain data
+  try { await mutateOnChain() } catch {}
+  // fetch our new counts instantly
+  setHasAlreadyVoted(true)
+  // also attempt to refresh the read-only poll immediately by invoking the effect's fetch (mutateOnChain already called)
       } catch {}
+      // After voting, probe on-chain tallies and possibly trigger early execution if threshold crossed
+      try {
+        // Use a read-only contract to fetch updated tallies
+        const readOnly = await getReadOnlyContract()
+        const req = await readOnly.withdrawalRequests(reqIdBig)
+        // votes may be BigNumber-like; convert to BigInt
+        const votesFor = BigInt(req.votesFor?.toString?.() ?? '0')
+        const votesAgainst = BigInt(req.votesAgainst?.toString?.() ?? '0')
+        // Update our local voteCounts cache so UI updates instantly
+        setVoteCounts({ for: votesFor, against: votesAgainst })
+        
+        // Compute 60% rule against total voting power (on-chain campaign balance)
+        let campaignIdForCall: any = request?.campaign?.id ?? request?.campaignId
+        if (!campaignIdForCall && typeof pathname === 'string') {
+          const m = pathname.match(/\/campaigns?\/(\d+)(?:\/|$)/i)
+          if (m) campaignIdForCall = Number(m[1])
+        }
+        let totalVotingPowerWei: bigint = 0n
+        if (campaignIdForCall) {
+          try {
+            const balRes = await fetch(`http://localhost:3000/api/campaigns/${campaignIdForCall}/balance`, { headers: authHeaders })
+            if (balRes.ok) {
+              const bj = await balRes.json()
+              const balEth = Number(bj?.balance ?? 0)
+              if (isFinite(balEth) && balEth > 0) totalVotingPowerWei = ethers.parseEther(String(balEth))
+            }
+          } catch {}
+        }
+        if (totalVotingPowerWei > 0n) {
+          const pctFor = (votesFor * 100n) / totalVotingPowerWei
+          console.log('Post-vote tallies & power threshold', { votesFor: votesFor.toString(), totalVotingPowerWei: totalVotingPowerWei.toString(), pctFor: pctFor.toString() })
+          if (pctFor > 60n) {
+            try {
+              const execContract = await getContract()
+              const execTx = await execContract.triggerEarlyExecution(reqIdBig)
+              await execTx.wait()
+              try { await mutateOnChain() } catch {}
+              alert('VOTE PASSED! Execution triggered. The funds are on their way.')
+            } catch (execErr) {
+              console.warn('triggerEarlyExecution failed', execErr)
+            }
+          }
+        }
+        const total = votesFor + votesAgainst
+        if (total > 0n) {
+          const pctFor = (votesFor * 100n) / total
+          console.log('Post-vote tallies', { votesFor: votesFor.toString(), votesAgainst: votesAgainst.toString(), pctFor: pctFor.toString() })
+          if (pctFor > 60n) {
+            if (isDev) console.log('Threshold exceeded: attempting early execution')
+            try {
+              const execContract = await getContract()
+              const execTx = await execContract.triggerEarlyExecution(reqIdBig)
+              await execTx.wait()
+              // refresh on-chain state after execution
+              try { await mutateOnChain() } catch {}
+              setLastCheckMsg('VOTE PASSED: execution triggered')
+              if (isDev) console.info('triggerEarlyExecution succeeded for', reqIdBig)
+            } catch (execErr: any) {
+              if (isDev) console.warn('Early execution attempt failed', execErr)
+              setLastCheckMsg('EXECUTION_FAILED')
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to probe/execute after vote', e)
+      }
       // Backend refresh broadcast
       try {
-        const refreshed = await api.get(`/campaigns/${request.campaignId}/withdrawals`).then(r => r.data)
-        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('withdrawalsUpdated', { detail: refreshed }))
+        const resp = await fetch(`http://localhost:8080/api/campaigns/${request.campaignId}/withdrawals`)
+        const refreshed = resp.ok ? await resp.json() : null
+        if (typeof window !== 'undefined' && refreshed) window.dispatchEvent(new CustomEvent('withdrawalsUpdated', { detail: refreshed }))
       } catch {}
       alert(`Vote submitted: ${approve ? 'Approve' : 'Reject'}`)
     } catch (err: any) {
@@ -125,31 +376,75 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
   const showButtons = status === 'PENDING_VOTE' && timeLeft.total > 0 && !hasAlreadyVoted && isEligibleVoter
 
   // Derive vote amounts (ETH + INR) once data + price available
+  const { data: backendVoteCount } = useSWR(
+    request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null,
+    async ([path]) => {
+      const res = await fetch(`http://localhost:3000/api${path}`, { headers: authHeaders })
+      if (!res.ok) return 0
+      const j = await res.json()
+      return Number(j?.count ?? 0)
+    },
+    { refreshInterval: 5000 }
+  )
+
   const voteDisplay = useMemo(() => {
-    if (isLoadingVoteCount || !onChainData) return { primary: 'Loading votes...', secondary: '' }
-    try {
-      const votesForEth = Number(ethers.formatEther(onChainData.votesFor))
-      const votesAgainstEth = Number(ethers.formatEther(onChainData.votesAgainst))
-      if (ethPriceInInr) {
-        const votesForInr = votesForEth * ethPriceInInr
-        const votesAgainstInr = votesAgainstEth * ethPriceInInr
-        return {
-          primary: `Vote Status: ${formatINR(votesForInr)} FOR / ${formatINR(votesAgainstInr)} AGAINST`,
-          secondary: `(${formatEth(votesForEth)} / ${formatEth(votesAgainstEth)})`
-        }
-      }
-      // Price not yet loaded; show ETH while fetching
-      return {
-        primary: `Vote Status: ${formatEth(votesForEth)} FOR / ${formatEth(votesAgainstEth)} AGAINST`,
-        secondary: priceError ? `(INR price error)` : `(Fetching INR price…)`
-      }
-    } catch {
-      return { primary: 'Vote Status: —', secondary: '' }
+    // Participation metric: X of Y donors have voted
+    const donorsArr = Array.isArray(donationsList) ? donationsList : (Array.isArray(donations) ? donations : [])
+    const uniqueDonors = new Set<string>(donorsArr.map((d: any) => String(d?.username ?? '')).filter(Boolean))
+    const y = uniqueDonors.size
+    const x = Number(backendVoteCount ?? 0)
+    return {
+      primary: `Participation: ${x} of ${y} Donors Have Voted`,
+      secondary: ''
     }
-  }, [isLoadingVoteCount, onChainData, ethPriceInInr, priceError])
+  }, [backendVoteCount, donationsList, donations])
 
   return (
     <div className="card p-4">
+      {/* Dev debug overlay - remove in production if noisy */}
+      <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/40">
+        <div className="font-semibold mb-1">Eligibility Debug</div>
+        <div className="grid grid-cols-2 gap-2 text-[12px]">
+          <div className="opacity-80">Auth loading:</div>
+          <div>{String(authLoading)}</div>
+
+          <div className="opacity-80">Is authenticated:</div>
+          <div>{String(isAuthenticated)}</div>
+
+          <div className="opacity-80">User wallet:</div>
+          <div>{user?.wallets?.[0]?.address ?? '—'}</div>
+
+          <div className="opacity-80">Campaign ID:</div>
+          <div>{request?.campaign?.id ?? request?.campaignId ?? '—'}</div>
+
+          <div className="opacity-80">On-chain Request ID:</div>
+          <div>{onChainRequestId ?? '—'}</div>
+
+          <div className="opacity-80">Backend hasDonated:</div>
+          <div>{String(debugHasDonated)}</div>
+
+          <div className="opacity-80">On-chain hasVoted:</div>
+          <div>{String(hasAlreadyVoted)}</div>
+
+          <div className="opacity-80">isEligibleVoter:</div>
+          <div>{String(isEligibleVoter)}</div>
+
+          <div className="opacity-80">Last check time:</div>
+          <div>{lastCheckAt ? new Date(lastCheckAt).toLocaleString() : '—'}</div>
+
+          <div className="opacity-80">Last check msg:</div>
+          <div className="break-words">{lastCheckMsg ?? '—'}</div>
+        </div>
+        {onChainData && (
+          <div className="mt-2 text-[12px]">
+            <div className="opacity-80">On-chain votes (ETH):</div>
+            <div>
+              For: {onChainData?.votesFor ? formatEth(Number(ethers.formatEther(onChainData.votesFor))) : '—'}
+              {' '}Against: {onChainData?.votesAgainst ? formatEth(Number(ethers.formatEther(onChainData.votesAgainst))) : '—'}
+            </div>
+          </div>
+        )}
+      </div>
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
           <div className="font-medium text-lg">{request?.purpose}</div>
@@ -165,7 +460,7 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
           ) : (
             <div className="text-xs subtle">Voting closed</div>
           )}
-          <div className="text-xs subtle mt-1">Submitted: {request?.createdAt ? new Date(request.createdAt).toLocaleString() : '—'}</div>
+          <div className="text-xs subtle mt-1">Submitted: {request?.createdAt ? formatDate(parseISO(String(request.createdAt)), 'PPpp') : '—'}</div>
         </div>
         <div className="flex flex-col items-end gap-3">
           <div className="flex gap-2">
@@ -176,20 +471,53 @@ export default function WithdrawalRequestCard({ request }: { request: any }) {
               <a className="btn-ghost text-sm" target="_blank" rel="noreferrer" href={`http://localhost:8080/uploads/${request.visualProofUrl}`}>Visual Proof</a>
             )}
           </div>
-          {status === 'PENDING_VOTE' && timeLeft.total > 0 && (
+          {status === 'PENDING_VOTE' && (
             <div className="mt-2">
-              {!isAuthenticated && <p className="text-xs">Please log in to vote.</p>}
-              {isAuthenticated && isEligibleVoter && !hasAlreadyVoted && (
-                <div className="flex gap-2">
-                  <button disabled={voting} onClick={() => handleVote(true)} className="btn bg-emerald-600 hover:bg-emerald-700 text-white">APPROVE</button>
-                  <button disabled={voting} onClick={() => handleVote(false)} className="btn bg-rose-600 hover:bg-rose-700 text-white">REJECT</button>
-                </div>
+              {/* Verbose voting render check for debugging state sync issues */}
+              {(() => {
+                try {
+                  console.log(`[VOTING RENDER CHECK for Request ${request?.onChainRequestId ?? request?.id}]`)
+                  console.log(`- Backend Status: ${String(request?.status)}`)
+                  console.log(`- Request onChainRequestId: ${String(request?.onChainRequestId ?? request?.onChainId ?? request?.id)}`)
+                  console.log(`- Voting Deadline (raw): ${String(request?.votingDeadline ?? onChainData?.votingDeadline ?? request?.votingDeadline)}`)
+                  try {
+                    const vd = request?.votingDeadline ?? onChainData?.votingDeadline
+                    console.log(`- Voting Deadline (Date): ${vd ? new Date(Number(vd) * (String(vd).length > 10 ? 1 : 1000)) : '—'}`)
+                  } catch (e) { console.log('- Voting Deadline (Date): parse error') }
+                  console.log(`- Is Deadline Passed?: ${Boolean(timeLeft && timeLeft.total <= 0)}`)
+                  console.log(`- TimeLeft (ms): ${timeLeft?.total ?? '—'}`)
+                  console.log(`- Is Authenticated?: ${String(isAuthenticated)}`)
+                  console.log(`- Is Eligible Voter?: ${String(isEligibleVoter)}`)
+                  console.log(`- Has Already Voted?: ${String(hasAlreadyVoted)}`)
+                  console.log(`- Local voteCounts: for=${voteCounts.for.toString()} against=${voteCounts.against.toString()}`)
+                  console.log(`- Donations count (denominator): ${Array.isArray(donationsList) ? donationsList.length : (Array.isArray(donations) ? donations.length : 0)}`)
+                } catch (err) {
+                  console.warn('VOTING RENDER CHECK failed', err)
+                }
+                return null
+              })()}
+
+              {timeLeft.total > 0 && (
+                <>
+                  {isLoading && (
+                    <p className="text-xs">Verifying your voter eligibility…</p>
+                  )}
+                  {!isLoading && !isEligibleVoter && (
+                    <p className="text-xs text-rose-600">Only verified donors to this campaign can vote.</p>
+                  )}
+                  {!isLoading && isEligibleVoter && hasAlreadyVoted && (
+                    <p className="text-xs subtle">You have already voted on this request.</p>
+                  )}
+                  {!isLoading && isEligibleVoter && !hasAlreadyVoted && (
+                    <div className="flex gap-2">
+                      <button disabled={voting} onClick={() => handleVote(true)} className="btn bg-emerald-600 hover:bg-emerald-700 text-white">APPROVE</button>
+                      <button disabled={voting} onClick={() => handleVote(false)} className="btn bg-rose-600 hover:bg-rose-700 text-white">REJECT</button>
+                    </div>
+                  )}
+                </>
               )}
-              {isAuthenticated && isEligibleVoter && hasAlreadyVoted && (
-                <p className="text-xs subtle">You have already voted on this request.</p>
-              )}
-              {isAuthenticated && !isEligibleVoter && (
-                <p className="text-xs text-rose-600">Only donors to this campaign are eligible to vote.</p>
+              {timeLeft.total <= 0 && (
+                <div className="text-xs subtle">Voting closed</div>
               )}
             </div>
           )}

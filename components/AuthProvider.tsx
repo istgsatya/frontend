@@ -30,6 +30,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     async function bootstrap() {
+      // Signal that auth hydration has started
+      setAuthLoading(true)
       try {
         // Read token from persisted storage directly to avoid hydration races
         const raw = typeof window !== 'undefined' ? window.localStorage.getItem('tc-auth') : null
