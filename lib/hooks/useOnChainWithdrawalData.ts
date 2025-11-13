@@ -41,7 +41,7 @@ export default function useOnChainWithdrawalData(onChainRequestId: any, campaign
   // Use an onErrorRetry to avoid aggressive retries when RPC is misconfigured.
   const { data, error, mutate } = useSWR(key, fetcher, {
     revalidateOnFocus: false,
-    refreshInterval: 15000,
+    refreshInterval: 8000,
     onErrorRetry(err, key, config, revalidate, { retryCount }) {
       // If RPC not configured, do not retry continuously — stop retrying.
       if (String(err?.message ?? '').toLowerCase().includes('next_public_rpc_url') || String(err?.message ?? '').toLowerCase().includes('no json rpc')) {

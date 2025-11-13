@@ -249,145 +249,66 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // backend voteCount is stored in local state `voteCount` and updated via useEffect / post-vote refresh
 
   async function handleVote(approve: boolean) {
+    console.log('--------------------')
+    console.log('VOTE DEBUG: handleVote function initiated.')
+
     try {
       setVoting(true)
+      console.log('VOTE DEBUG: setVoting(true) called. UI should show loading state.')
+
       const contract = await getContract()
-      const signer = await getSigner()
-      const from = await signer?.getAddress()
-      if (!from) throw new Error('Please connect your wallet')
-      // Ensure we pass a correct BigInt request id and log it for debugging
+      if (!contract) {
+        console.error('VOTE DEBUG: FATAL - getContract() returned null. Aborting.')
+        setVoting(false)
+        return
+      }
+      console.log('VOTE DEBUG: Contract instance obtained successfully.')
+
       const reqIdBig = BigInt(onChainRequestId ?? request?.id ?? 0)
-      console.log(`Preparing to send ON-CHAIN VOTE for Request ID: ${reqIdBig}, Vote: ${approve}`)
-
-      // Pre-check on-chain request state to avoid sending a tx that will revert
-      try {
-        const readOnly = await getReadOnlyContract()
-        const onChainReq = await readOnly.withdrawalRequests(reqIdBig)
-        console.log('onChainReq before vote:', onChainReq)
-        // Try common deadline fields (some contracts store votingDeadline in seconds)
-        const deadlineSec = Number(onChainReq.votingDeadline ?? onChainReq.deadline ?? 0)
-        const nowSec = Math.floor(Date.now() / 1000)
-        if (deadlineSec && deadlineSec <= nowSec) {
-          setLastCheckMsg('PRECHECK: votingDeadline passed')
-          setVoting(false)
-          if (isDev) console.info('Voting inactive: deadline passed for request', reqIdBig)
-          return
-        }
-        // Optional: check a boolean/enum status field if present
-        const statusField = onChainReq.status ?? onChainReq.state ?? null
-        if (statusField && String(statusField).toLowerCase().includes('inactive')) {
-          setLastCheckMsg('PRECHECK: status inactive')
-          setVoting(false)
-          if (isDev) console.info('Voting inactive: status field indicates inactive for request', reqIdBig, statusField)
-          return
-        }
-      } catch (preErr) {
-        // If pre-check fails (read error), log but continue to attempt vote — however this is safer to abort
-        console.warn('pre-vote on-chain check failed', preErr)
-        setLastCheckMsg('PRECHECK_ERROR')
-        // proceed cautiously — let the contract handle reverts, but user will see error
+      if (reqIdBig === 0n) {
+        console.error('VOTE DEBUG: FATAL - onChainRequestId is missing. Aborting vote.')
+        setVoting(false)
+        return
       }
+      console.log(`VOTE DEBUG: Preparing to vote on on-chain request ID: ${reqIdBig}`)
 
-  if (isDev) console.log(`Sending ON-CHAIN VOTE for Request ID: ${reqIdBig}, Vote: ${approve}`)
+      console.log("VOTE DEBUG: Sending on-chain transaction 'voteOnRequest'...")
       const tx = await contract.voteOnRequest(reqIdBig, approve)
+      console.log('VOTE DEBUG: Transaction sent. Waiting for confirmation (tx.wait())...')
       await tx.wait()
-      // Force immediate refresh of on-chain data and optimistically update participation UI
-      try {
-        // Force revalidation of on-chain data (await so subsequent UI uses fresh values)
-        try { await mutateOnChain() } catch (e) { if (isDev) console.warn('mutateOnChain failed', e) }
-        // Optimistic local update: mark user as having voted so buttons disappear instantly
-        setHasAlreadyVoted(true)
-        setUserHasVoted(true)
+      console.log('VOTE DEBUG: On-chain transaction has been confirmed by the network!')
 
-        // Refresh backend vote count immediately so Participation updates without waiting for polling
-        try {
-          if (request?.id) {
-            const vc = await api.get(`/withdrawals/${request.id}/votecount`)
-            setVoteCount(Number(vc?.data?.count ?? vc?.data ?? 0))
-            // Also confirm has-voted from backend (best-effort)
-            try {
-              const hv = await api.get(`/withdrawals/${request.id}/has-voted`)
-              setUserHasVoted(Boolean(hv?.data?.hasVoted ?? hv?.data ?? true))
-            } catch {}
-          }
-        } catch (e) { if (isDev) console.warn('refresh backend votecount failed', e) }
-      } catch {}
-      // After voting, probe on-chain tallies and possibly trigger early execution if threshold crossed
-      try {
-        // Use a read-only contract to fetch updated tallies
-        const readOnly = await getReadOnlyContract()
-        const req = await readOnly.withdrawalRequests(reqIdBig)
-        // votes may be BigNumber-like; convert to BigInt
-        const votesFor = BigInt(req.votesFor?.toString?.() ?? '0')
-        const votesAgainst = BigInt(req.votesAgainst?.toString?.() ?? '0')
-        // Update our local voteCounts cache so UI updates instantly
-        setVoteCounts({ for: votesFor, against: votesAgainst })
-        
-        // Compute 60% rule against total voting power (on-chain campaign balance)
-        let campaignIdForCall: any = request?.campaign?.id ?? request?.campaignId
-        if (!campaignIdForCall && typeof pathname === 'string') {
-          const m = pathname.match(/\/campaigns?\/(\d+)(?:\/|$)/i)
-          if (m) campaignIdForCall = Number(m[1])
-        }
-        let totalVotingPowerWei: bigint = 0n
-        if (campaignIdForCall) {
-          try {
-            // Use the api client (frontend proxy) so Authorization header is included
-            const r = await api.get(`/campaigns/${campaignIdForCall}/balance`)
-            const bj = r.data
-            const balEth = Number(bj?.balance ?? bj ?? 0)
-            if (isFinite(balEth) && balEth > 0) totalVotingPowerWei = ethers.parseEther(String(balEth))
-          } catch {}
-        }
-        if (totalVotingPowerWei > 0n) {
-          const pctFor = (votesFor * 100n) / totalVotingPowerWei
-          console.log('Post-vote tallies & power threshold', { votesFor: votesFor.toString(), totalVotingPowerWei: totalVotingPowerWei.toString(), pctFor: pctFor.toString() })
-          if (pctFor > 60n) {
-            try {
-              const execContract = await getContract()
-              const execTx = await execContract.triggerEarlyExecution(reqIdBig)
-              await execTx.wait()
-              try { await mutateOnChain() } catch {}
-              alert('VOTE PASSED! Execution triggered. The funds are on their way.')
-            } catch (execErr) {
-              console.warn('triggerEarlyExecution failed', execErr)
-            }
-          }
-        }
-        const total = votesFor + votesAgainst
-        if (total > 0n) {
-          const pctFor = (votesFor * 100n) / total
-          console.log('Post-vote tallies', { votesFor: votesFor.toString(), votesAgainst: votesAgainst.toString(), pctFor: pctFor.toString() })
-          if (pctFor > 60n) {
-            if (isDev) console.log('Threshold exceeded: attempting early execution')
-            try {
-              const execContract = await getContract()
-              const execTx = await execContract.triggerEarlyExecution(reqIdBig)
-              await execTx.wait()
-              // refresh on-chain state after execution
-              try { await mutateOnChain() } catch {}
-              setLastCheckMsg('VOTE PASSED: execution triggered')
-              if (isDev) console.info('triggerEarlyExecution succeeded for', reqIdBig)
-            } catch (execErr: any) {
-              if (isDev) console.warn('Early execution attempt failed', execErr)
-              setLastCheckMsg('EXECUTION_FAILED')
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to probe/execute after vote', e)
+      const withdrawalId = request?.id
+      if (!withdrawalId) {
+        console.error('VOTE DEBUG: FATAL - Backend withdrawal ID (request.id) is missing. Cannot call backend. Aborting.')
+        setVoting(false)
+        return
       }
-      // Backend refresh broadcast
+
+      console.log(`VOTE DEBUG: Preparing to send vote to backend. Withdrawal ID: ${withdrawalId}`)
+
+      let response: any = null
       try {
-        const resp = await api.get(`/campaigns/${request.campaignId}/withdrawals`)
-        const refreshed = resp?.data ?? null
-        if (typeof window !== 'undefined' && refreshed) window.dispatchEvent(new CustomEvent('withdrawalsUpdated', { detail: refreshed }))
-      } catch {}
-      alert(`Vote submitted: ${approve ? 'Approve' : 'Reject'}`)
-    } catch (err: any) {
-      alert(err?.message || 'Vote failed')
+        response = await api.post(`/withdrawals/${withdrawalId}/vote`, { approve })
+      } catch (err) {
+        console.error('VOTE DEBUG: Backend API call failed', err)
+        throw err
+      }
+
+      console.log('VOTE DEBUG: Backend API call to /vote has been sent successfully!')
+      console.log('VOTE DEBUG: Backend Response:', response?.data)
+
+      console.log('VOTE DEBUG: Mutating local state to reflect the vote.')
+      try { await mutate(`/withdrawals/${withdrawalId}/votecount`) } catch (e) { console.warn('VOTE DEBUG: mutate votecount failed', e) }
+      try { await mutate(`/withdrawals/${withdrawalId}/has-voted`) } catch (e) { console.warn('VOTE DEBUG: mutate has-voted failed', e) }
+      setHasAlreadyVoted(true)
+
+    } catch (error) {
+      console.error('VOTE DEBUG: An error occurred inside the handleVote function:', error)
     } finally {
+      console.log('VOTE DEBUG: handleVote function finished. Setting voting to false.')
       setVoting(false)
+      console.log('--------------------')
     }
   }
 

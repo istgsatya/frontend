@@ -78,7 +78,7 @@ export default function CampaignDetail() {
     }
   }, [withdrawalsData, withdrawalsError])
 
-  // Poll for live updates every 7 seconds for other resources
+  // Poll for live updates every 8 seconds for other resources (reduced polling frequency)
   useEffect(() => {
     const iv = setInterval(async () => {
       try {
@@ -92,7 +92,7 @@ export default function CampaignDetail() {
   if (bRes.status === 'fulfilled') setBalance(Number(bRes.value ?? 0))
         if (dRes.status === 'fulfilled') setDonations(dRes.value)
       } catch {}
-    }, 7000)
+    }, 8000)
     return () => clearInterval(iv)
   }, [id])
 
@@ -365,7 +365,10 @@ export default function CampaignDetail() {
           <div className="flex-1">
             <AnimatedProgress goal={campaign?.goal} raised={balance ?? Number(campaign?.amountRaised ?? 0)} />
           </div>
-          <div className="text-sm subtle w-40 text-right">Raised: {typeof balance === 'number' ? formatINR((balance ?? 0) * ethToInrRate, 0) : formatINR(0, 0)} </div>
+          <div className="text-sm subtle w-40 text-right">
+            <div>Raised: {typeof balance === 'number' ? formatINR((balance ?? 0) * ethToInrRate, 0) : formatINR(0, 0)}</div>
+            <div className="mt-1">Overall Withdrawn: {formatINR(Number(campaign?.totalWithdrawn ?? campaign?.totalWithdrawnEth ?? 0) * (ethToInrRate || 0), 0)}</div>
+          </div>
         </div>
         <div className="card mt-4 p-4 space-y-3">
           <div className="text-sm text-slate-700">Enter amount (INR)</div>

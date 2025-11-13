@@ -35,6 +35,21 @@ const axiosClient: AxiosInstance = axios.create({
 // Interceptor: attach Authorization header if we have a stored token.
 axiosClient.interceptors.request.use(
 	(config: any) => {
+		// Defensive guard: refuse to send requests that contain 'undefined' or 'null'
+		// in the URL path. This prevents accidental backend errors like
+		// GET /withdrawals/undefined/votecount when a caller passes an
+		// undefined id into a template string.
+		try {
+			const rawUrl = String(config?.url ?? '')
+			// Normalize and test for the literal words undefined/null in the path
+			if (/\bundefined\b/.test(rawUrl) || /\bnull\b/.test(rawUrl)) {
+				console.warn('Blocked API request with invalid URL:', rawUrl)
+				return Promise.reject(new Error(`Blocked API request: invalid URL contains undefined/null: ${rawUrl}`))
+			}
+		} catch (err) {
+			// If our guard fails for any reason, don't block normal behavior —
+			// fall through and continue; the auth interceptor below will still run.
+		}
 		try {
 			const token = getStoredToken()
 			if (token) {
