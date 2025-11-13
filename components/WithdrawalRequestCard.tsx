@@ -6,7 +6,7 @@ import { getContract, getSigner } from '@/lib/web3'
 import { api } from '@/lib/api'
 import useSWR, { mutate } from 'swr'
 import useCountdown from '@/lib/hooks/useCountdown'
-import useOnChainVoteData from '@/lib/hooks/useOnChainVoteData'
+import useOnChainWithdrawalData from '@/lib/hooks/useOnChainWithdrawalData'
 import { useAuthStore } from '@/lib/store/auth'
 import { getReadOnlyContract } from '@/lib/web3'
 import { formatINR, formatEth } from '@/lib/format'
@@ -32,16 +32,26 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // Resolve on-chain request id
   const onChainRequestId = request?.onChainRequestId ?? request?.onChainId ?? request?.id
 
-  // Live on-chain vote counts (BigInt) fetched from a read-only contract
+  // Live on-chain vote counts (BigInt) fetched via consolidated hook
   const [voteCounts, setVoteCounts] = useState<{ for: bigint; against: bigint }>({ for: 0n, against: 0n })
 
-  // Fetch on-chain vote data via SWR polling (every 5s) and set deadline
-  const { data: onChainData, isLoading: isLoadingVoteCount, mutate: mutateOnChain } = useOnChainVoteData(onChainRequestId)
+  // Consolidated, sequential on-chain fetch to avoid RPC spam
+  const { data: onChainAll, error: onChainErr, isLoading: isLoadingOnChain, mutate: mutateOnChain } = useOnChainWithdrawalData(onChainRequestId, request?.campaign?.id ?? request?.campaignId)
+
   useEffect(() => {
-    if (!onChainData) return
-    const sec = Number(onChainData.votingDeadline ?? 0)
-    if (sec) setDeadlineMs(sec * 1000)
-  }, [onChainData])
+    if (!onChainAll) return
+    try {
+      const req = onChainAll.requestData
+      const sec = Number(req?.votingDeadline ?? onChainAll?.requestData?.deadline ?? 0)
+      if (sec) setDeadlineMs(sec > 1e12 ? sec : sec * 1000)
+      const votesFor = BigInt(req?.votesFor?.toString?.() ?? '0')
+      const votesAgainst = BigInt(req?.votesAgainst?.toString?.() ?? '0')
+      setVoteCounts({ for: votesFor, against: votesAgainst })
+      setHasAlreadyVoted(Boolean(onChainAll.hasVoted))
+    } catch (e) {
+      // ignore parse errors
+    }
+  }, [onChainAll])
 
   // ETH->INR price from context (cached and refreshed periodically)
   const { price: ethPriceInInr, error: priceError } = useEthPrice()
@@ -51,44 +61,8 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
   const authHeaders: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
 
-  // Dedicated, faster polling for active votes: every 4s while pending
-  useEffect(() => {
-    let iv: any
-    let cancelled = false
-    const run = async () => { try { await mutateOnChain() } catch {} }
-    if (request?.status === 'PENDING_VOTE') {
-      run()
-      iv = setInterval(() => { if (!cancelled) run() }, 4000)
-    }
-    return () => { cancelled = true; if (iv) clearInterval(iv) }
-  }, [request?.status, mutateOnChain])
-
-  // Poll the blockchain every 5s for the authoritative vote counts and cache locally.
-  useEffect(() => {
-    let cancelled = false
-    const fetchVoteCounts = async () => {
-      try {
-        const readOnly = await getReadOnlyContract()
-        const reqId = BigInt(onChainRequestId ?? request?.id ?? 0)
-        if (!reqId || reqId === 0n) {
-          // nothing to fetch
-          setVoteCounts({ for: 0n, against: 0n })
-          setLastCheckMsg((s) => s ? s : 'NO_ONCHAIN_REQID')
-          return
-        }
-        const req = await readOnly.withdrawalRequests(reqId)
-        const votesFor = BigInt(req.votesFor?.toString?.() ?? '0')
-        const votesAgainst = BigInt(req.votesAgainst?.toString?.() ?? '0')
-        if (!cancelled) setVoteCounts({ for: votesFor, against: votesAgainst })
-      } catch (err) {
-        console.warn('fetchVoteCounts failed', err)
-      }
-    }
-    // initial fetch
-    fetchVoteCounts()
-    const iv = setInterval(() => { fetchVoteCounts() }, 5000)
-    return () => clearInterval(iv)
-  }, [onChainRequestId, request?.id])
+  // Note: polling is handled inside the consolidated hook (refreshInterval),
+  // so we avoid additional intervals here to prevent RPC spam.
 
   // Ensure we know whether the current user already voted by probing the read-only contract
   useEffect(() => {
@@ -246,6 +220,20 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   })()
   const timeLeft = useCountdown(rawDeadline)
 
+  // Derive vote amounts (ETH + INR) once data + price available
+  const { data: backendVoteCount, mutate: mutateBackendVoteCount } = useSWR(
+    request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null,
+    async ([path]) => {
+      try {
+        const res = await api.get(path)
+        return Number(res.data?.count ?? 0)
+      } catch {
+        return 0
+      }
+    },
+    { refreshInterval: 5000 }
+  )
+
   async function handleVote(approve: boolean) {
     try {
       setVoting(true)
@@ -289,13 +277,28 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   if (isDev) console.log(`Sending ON-CHAIN VOTE for Request ID: ${reqIdBig}, Vote: ${approve}`)
       const tx = await contract.voteOnRequest(reqIdBig, approve)
       await tx.wait()
-      // Refresh on-chain vote data
+      // Force immediate refresh of on-chain data and optimistically update participation UI
       try {
-        // Immediately refresh our local vote counts and SWR-backed on-chain data
-  try { await mutateOnChain() } catch {}
-  // fetch our new counts instantly
-  setHasAlreadyVoted(true)
-  // also attempt to refresh the read-only poll immediately by invoking the effect's fetch (mutateOnChain already called)
+        // Force revalidation of on-chain data (await so subsequent UI uses fresh values)
+        try { await mutateOnChain() } catch (e) { if (isDev) console.warn('mutateOnChain failed', e) }
+
+        // Optimistic local update: mark user as having voted so buttons disappear instantly
+        setHasAlreadyVoted(true)
+
+        // Optimistically increment backend vote count so Participation updates immediately without waiting for backend
+        try {
+          const key = request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null
+          if (key && typeof mutateBackendVoteCount === 'function') {
+            const prev = Number(backendVoteCount ?? 0)
+            // Update SWR cache locally without revalidation
+            await mutateBackendVoteCount(prev + 1, false)
+            // Kick off a background revalidation to ensure backend eventually agrees
+            try { mutate(key) } catch {}
+          } else if (key) {
+            // Fallback: trigger global mutate if hook-local mutate not available
+            try { mutate(key) } catch {}
+          }
+        } catch (e) { if (isDev) console.warn('mutateBackendVoteCount failed', e) }
       } catch {}
       // After voting, probe on-chain tallies and possibly trigger early execution if threshold crossed
       try {
@@ -380,20 +383,6 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   const badgeClass = status === 'EXECUTED' ? 'bg-emerald-100 text-emerald-800' : status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
   const showButtons = status === 'PENDING_VOTE' && timeLeft.total > 0 && !hasAlreadyVoted && isEligibleVoter
 
-  // Derive vote amounts (ETH + INR) once data + price available
-  const { data: backendVoteCount } = useSWR(
-    request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null,
-    async ([path]) => {
-      try {
-        const res = await api.get(path)
-        return Number(res.data?.count ?? 0)
-      } catch {
-        return 0
-      }
-    },
-    { refreshInterval: 5000 }
-  )
-
   const voteDisplay = useMemo(() => {
     // Participation metric: X of Y donors have voted
     const donorsArr = Array.isArray(donationsList) ? donationsList : (Array.isArray(donations) ? donations : [])
@@ -442,12 +431,12 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
           <div className="opacity-80">Last check msg:</div>
           <div className="break-words">{lastCheckMsg ?? '—'}</div>
         </div>
-        {onChainData && (
+        {onChainAll?.requestData && (
           <div className="mt-2 text-[12px]">
             <div className="opacity-80">On-chain votes (ETH):</div>
             <div>
-              For: {onChainData?.votesFor ? formatEth(Number(ethers.formatEther(onChainData.votesFor))) : '—'}
-              {' '}Against: {onChainData?.votesAgainst ? formatEth(Number(ethers.formatEther(onChainData.votesAgainst))) : '—'}
+              For: {onChainAll?.requestData?.votesFor ? formatEth(Number(ethers.formatEther(onChainAll.requestData.votesFor))) : '—'}
+              {' '}Against: {onChainAll?.requestData?.votesAgainst ? formatEth(Number(ethers.formatEther(onChainAll.requestData.votesAgainst))) : '—'}
             </div>
           </div>
         )}

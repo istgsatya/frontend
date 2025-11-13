@@ -1,4 +1,4 @@
-import { BrowserProvider, Contract, JsonRpcSigner } from 'ethers'
+import { BrowserProvider, Contract, JsonRpcSigner, JsonRpcProvider } from 'ethers'
 import abi from '@/public/PlatformLedger.json'
 
 // Fallback contract address discovered in the backend application.properties
@@ -22,6 +22,14 @@ export function getProvider(): BrowserProvider | null {
   const { ethereum } = window as any
   if (!ethereum) return null
   return new BrowserProvider(ethereum)
+}
+
+export function getJsonRpcProvider(): JsonRpcProvider {
+  const url = (typeof window !== 'undefined' && (window as any).__NEXT_PUBLIC_RPC_URL) || process.env.NEXT_PUBLIC_RPC_URL
+  if (url) return new JsonRpcProvider(url)
+  // Fallback: if no dedicated RPC provided, use window.ethereum via BrowserProvider's provider under the hood
+  // but JsonRpcProvider requires an RPC URL; in absence, throw so callers can fallback to BrowserProvider-based read-only usage
+  throw new Error('No JSON RPC URL configured (NEXT_PUBLIC_RPC_URL)')
 }
 
 export async function getSigner(): Promise<JsonRpcSigner | null> {
@@ -74,10 +82,19 @@ export async function getContract() {
 
 // Read-only contract instance that does NOT prompt the wallet for permissions
 export async function getReadOnlyContract() {
-  const provider = getProvider()
   const address = resolveContractAddress()
-  if (!provider || !address) throw new Error('Contract not configured. Please set NEXT_PUBLIC_CONTRACT_ADDRESS and ABI.')
-  return new Contract(address, abi as any, provider)
+  if (!address) throw new Error('Contract not configured. Please set NEXT_PUBLIC_CONTRACT_ADDRESS and ABI.')
+  try {
+    // Prefer dedicated JsonRpcProvider to avoid relying on user wallet RPC
+    const jsonProv = getJsonRpcProvider()
+    return new Contract(address, abi as any, jsonProv)
+  } catch (e) {
+    // IMPORTANT: do NOT silently fallback to the user's wallet provider for heavy read-only polling.
+    // Many wallets (MetaMask) rate-limit or block repeated JSON-RPC calls and will show errors like
+    // "RPC endpoint returned too many errors" if the frontend polls the wallet provider heavily.
+    // Instead, require a dedicated JSON-RPC endpoint for read-only operations.
+    throw new Error('No JSON RPC URL configured. Please set NEXT_PUBLIC_RPC_URL to a stable RPC endpoint to enable read-only contract calls.')
+  }
 }
 
 /**
