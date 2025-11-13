@@ -249,6 +249,8 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // backend voteCount is stored in local state `voteCount` and updated via useEffect / post-vote refresh
 
   async function handleVote(approve: boolean) {
+    // THIS IS THE MOST IMPORTANT LINE IN THE ENTIRE PROJECT
+    alert('!!! VOTE BUTTON CLICKED !!!')
     console.log('--------------------')
     console.log('VOTE DEBUG: handleVote function initiated.')
 
@@ -274,7 +276,9 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
 
       console.log("VOTE DEBUG: Sending on-chain transaction 'voteOnRequest'...")
       const tx = await contract.voteOnRequest(reqIdBig, approve)
-      console.log('VOTE DEBUG: Transaction sent. Waiting for confirmation (tx.wait())...')
+      console.log('VOTE DEBUG: Transaction sent. Capturing transaction hash and waiting for confirmation (tx.wait())...')
+      const transactionHash = tx.hash
+      console.log('VOTE DEBUG: Captured transaction hash:', transactionHash)
       await tx.wait()
       console.log('VOTE DEBUG: On-chain transaction has been confirmed by the network!')
 
@@ -285,22 +289,45 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
         return
       }
 
-      console.log(`VOTE DEBUG: Preparing to send vote to backend. Withdrawal ID: ${withdrawalId}`)
+      console.log(`VOTE DEBUG: Preparing to send verification to backend. Withdrawal ID: ${withdrawalId}`)
 
-      let response: any = null
       try {
-        response = await api.post(`/withdrawals/${withdrawalId}/vote`, { approve })
+        // Per new Verify-and-Record workflow: send the transaction hash so the backend
+        // can verify the on-chain vote and record it server-side.
+        await api.post(`/withdrawals/${withdrawalId}/verify-vote`, { transactionHash })
+        console.log('VOTE DEBUG: Backend API call to /verify-vote has been sent successfully!')
       } catch (err) {
-        console.error('VOTE DEBUG: Backend API call failed', err)
-        throw err
+        console.error('VOTE DEBUG: Backend verification API call failed', err)
+        // DO NOT re-throw the error. Handle it. Show a user-friendly message.
+        alert('Your vote was recorded on the blockchain, but the server failed to verify the transaction. Please refresh the page.')
+        // We stop here because the backend state is now out of sync.
+        return
       }
 
-      console.log('VOTE DEBUG: Backend API call to /vote has been sent successfully!')
-      console.log('VOTE DEBUG: Backend Response:', response?.data)
+      console.log('VOTE DEBUG: Forcing refresh of vote count and user vote state...')
+      // First attempt to revalidate any SWR caches that other parts of the app may be using.
+      try {
+        await mutate(`/withdrawals/${withdrawalId}/votecount`)
+      } catch (e) {
+        console.warn('VOTE DEBUG: mutate votecount failed', e)
+      }
+      try {
+        await mutate(`/withdrawals/${withdrawalId}/has-voted`)
+      } catch (e) {
+        console.warn('VOTE DEBUG: mutate has-voted failed', e)
+      }
 
-      console.log('VOTE DEBUG: Mutating local state to reflect the vote.')
-      try { await mutate(`/withdrawals/${withdrawalId}/votecount`) } catch (e) { console.warn('VOTE DEBUG: mutate votecount failed', e) }
-      try { await mutate(`/withdrawals/${withdrawalId}/has-voted`) } catch (e) { console.warn('VOTE DEBUG: mutate has-voted failed', e) }
+      // To ensure this component's local state updates immediately (avoids NaN),
+      // also fetch the fresh vote count directly and set it into local state.
+      try {
+        const vcResp = await api.get(`/withdrawals/${withdrawalId}/votecount`)
+        const fresh = Number(vcResp?.data?.count ?? vcResp?.data ?? vcResp?.data?.voteCount ?? 0)
+        setVoteCount(Number.isFinite(fresh) ? fresh : 0)
+        console.log('VOTE DEBUG: Local voteCount state updated to', fresh)
+      } catch (e) {
+        console.warn('VOTE DEBUG: manual votecount fetch failed', e)
+      }
+
       setHasAlreadyVoted(true)
 
     } catch (error) {
@@ -502,11 +529,11 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
                     )}
                     {!isLoading && isEligibleVoter && !userHasVoted && (
                       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-2">
-                        <button disabled={voting || userHasVoted} onClick={() => handleVote(true)} className="btn inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2">
+                        <button type="button" disabled={voting || userHasVoted} onClick={() => handleVote(true)} className="btn inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2">
                           {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>}
                           <span>{voting ? 'Submitting vote...' : 'Approve'}</span>
                         </button>
-                        <button disabled={voting || userHasVoted} onClick={() => handleVote(false)} className="btn inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-4 py-2">
+                        <button type="button" disabled={voting || userHasVoted} onClick={() => handleVote(false)} className="btn inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-4 py-2">
                           {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>}
                           <span>{voting ? 'Submitting vote...' : 'Reject'}</span>
                         </button>
