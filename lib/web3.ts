@@ -1,6 +1,22 @@
 import { BrowserProvider, Contract, JsonRpcSigner } from 'ethers'
 import abi from '@/public/PlatformLedger.json'
 
+// Fallback contract address discovered in the backend application.properties
+// This is safe to include as it's not a secret; it enables running the frontend
+// without requiring the developer to create a .env.local immediately.
+const FALLBACK_CONTRACT_ADDRESS = '0x976Ed876e266B818Ce4DB67589FdFe44d685b823'
+
+function resolveContractAddress(): string | null {
+  // Runtime override for client-side: window.__NEXT_PUBLIC_CONTRACT_ADDRESS can be injected
+  if (typeof window !== 'undefined' && (window as any).__NEXT_PUBLIC_CONTRACT_ADDRESS) {
+    return (window as any).__NEXT_PUBLIC_CONTRACT_ADDRESS
+  }
+  // Build-time env
+  if (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS) return process.env.NEXT_PUBLIC_CONTRACT_ADDRESS
+  // Fallback discovered from backend
+  return FALLBACK_CONTRACT_ADDRESS
+}
+
 export function getProvider(): BrowserProvider | null {
   if (typeof window === 'undefined') return null
   const { ethereum } = window as any
@@ -51,7 +67,7 @@ export async function getSigner(): Promise<JsonRpcSigner | null> {
 
 export async function getContract() {
   const signer = await getSigner()
-  const address = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS
+  const address = resolveContractAddress()
   if (!signer || !address) throw new Error('Contract not configured. Please set NEXT_PUBLIC_CONTRACT_ADDRESS and ABI.')
   return new Contract(address, abi as any, signer)
 }
@@ -59,7 +75,7 @@ export async function getContract() {
 // Read-only contract instance that does NOT prompt the wallet for permissions
 export async function getReadOnlyContract() {
   const provider = getProvider()
-  const address = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS
+  const address = resolveContractAddress()
   if (!provider || !address) throw new Error('Contract not configured. Please set NEXT_PUBLIC_CONTRACT_ADDRESS and ABI.')
   return new Contract(address, abi as any, provider)
 }

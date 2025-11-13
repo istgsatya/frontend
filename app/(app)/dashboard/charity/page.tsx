@@ -35,23 +35,26 @@ export default function CharityDashboard() {
   }, [user, router])
 
   const { data: summary } = useSWR(user ? '/dashboard/charity' : null, fetcher, { refreshInterval: 7000 })
+  // Explicit charity endpoints for detailed data
+  const { data: campaignsList } = useSWR(user ? '/my-charity/campaigns' : null, fetcher)
+  const { data: donationsList } = useSWR(user ? '/my-charity/donations' : null, fetcher)
   // (donation history link provided below) — detailed donation history is on its own page
   // When campaigns are present, fetch on-chain balances for each and compute a real total
   useEffect(() => {
-    if (!summary) return
-    if (!Array.isArray(summary?.campaigns) || summary.campaigns.length === 0) {
+    // When campaigns list or price updates, fetch on-chain balances for each campaign
+    const list = Array.isArray(campaignsList) ? campaignsList : (Array.isArray(summary?.campaigns) ? summary.campaigns : [])
+    if (!list || list.length === 0) {
       setCampaignBalances({})
       setTotalRaisedReal(0)
       return
     }
 
     let mounted = true
-
     async function fetchBalances() {
       try {
-        const entries = await Promise.all(summary.campaigns.map(async (c: any) => {
+        const entries = await Promise.all(list.map(async (c: any) => {
           try {
-            const b = await api.get(`/campaigns/${c.id}/balance`).then(r => r.data?.balance)
+            const b = await api.get(`/campaigns/${c.id}/balance`).then(r => r.data?.balance ?? r.data)
             return [String(c.id), Number(b ?? 0)] as const
           } catch {
             return [String(c.id), 0] as const
@@ -61,17 +64,16 @@ export default function CharityDashboard() {
         const map = Object.fromEntries(entries)
         setCampaignBalances(map)
 
-        // Compute total raised in INR using server-provided fiat when available,
-        // otherwise convert on-chain ETH balances to INR via price.
-        const totalInr = summary.campaigns.reduce((acc: number, c: any) => {
-          const serverRaised = Number(c?.raised ?? 0)
+        // Sum total raised across all campaigns using on-chain balances and current price (INR)
+        const totalInr = Object.entries(map).reduce((acc, [cid, balEth]) => {
+          const campaign = list.find((x: any) => String(x.id) === cid)
+          const serverRaised = Number(campaign?.raised ?? 0)
           if (serverRaised && serverRaised > 0) return acc + serverRaised
-          const balEth = Number(map[String(c.id)] ?? 0)
-          return acc + (balEth * price)
+          return acc + (Number(balEth || 0) * (price || 0))
         }, 0)
 
         setTotalRaisedReal(totalInr)
-      } catch {
+      } catch (err) {
         if (!mounted) return
       }
     }
@@ -79,7 +81,7 @@ export default function CharityDashboard() {
     fetchBalances()
     const iv = setInterval(fetchBalances, 7000)
     return () => { mounted = false; clearInterval(iv) }
-  }, [summary?.campaigns, price])
+  }, [campaignsList, summary?.campaigns, price])
 
   // fetch INR price for display
   useEffect(() => {
@@ -229,11 +231,45 @@ export default function CharityDashboard() {
         </section>
       )}
 
-      {/* All Donations: show a combined list of donations across campaigns OR a top-level donations array if provided by the backend */}
+      {/* Recent Donations Ledger: show the 10 most recent donations */}
       <section>
-        <h2 className="text-xl font-semibold mb-3">All Donations</h2>
-        <div className="space-y-3">
-          <div className="card p-4">For full donation history, <a href="/dashboard/charity/donations" className="underline text-brand-700">click here</a>.</div>
+        <h2 className="text-xl font-semibold mb-3">Recent Donations</h2>
+        <div className="card p-4">
+          {Array.isArray(donationsList) && donationsList.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left">
+                    <th className="pb-2">Campaign</th>
+                    <th className="pb-2">Donor</th>
+                    <th className="pb-2">Amount (INR)</th>
+                    <th className="pb-2">Date</th>
+                    <th className="pb-2">Tx</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {donationsList.slice().sort((a: any, b: any) => (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())).slice(0, 10).map((d: any) => {
+                    const ethAmt = Number(d?.amount ?? d?.amountEth ?? d?.value ?? 0)
+                    const inrAmt = Number(d?.amountFiat ?? d?.amountInr ?? d?.fiatAmount ?? 0) || (ethAmt && price ? ethAmt * price : 0)
+                    return (
+                      <tr key={d.id || d.transactionHash} className="border-t">
+                        <td className="py-2">{d.campaignTitle ?? d.campaignName ?? '—'}</td>
+                        <td className="py-2">{d.username ?? d.donorName ?? (d.from ? `${String(d.from).slice(0,6)}...${String(d.from).slice(-4)}` : 'Anonymous')}</td>
+                        <td className="py-2">{formatINR(Number(inrAmt) || 0, 0)}</td>
+                        <td className="py-2">{d.createdAt ? formatDateHuman(d.createdAt) : '—'}</td>
+                        <td className="py-2">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">View</a> : '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-sm subtle">No recent donations.</div>
+          )}
+          <div className="mt-3 text-right">
+            <a href="/dashboard/charity/donations" className="underline text-brand-700">View Full Donation History</a>
+          </div>
         </div>
       </section>
     </div>

@@ -1,6 +1,7 @@
 "use client"
 import React, { useEffect, useMemo, useState } from 'react'
 import { ethers } from 'ethers'
+import { motion, AnimatePresence } from 'framer-motion'
 import { getContract, getSigner } from '@/lib/web3'
 import { api } from '@/lib/api'
 import useSWR, { mutate } from 'swr'
@@ -94,11 +95,8 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
     let cancelled = false
     const checkHasVoted = async () => {
       try {
-        const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
-        const headers: Record<string,string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
-        const meRes = await fetch('http://localhost:8080/api/auth/me', { headers })
-        if (!meRes.ok) return
-        const me = await meRes.json()
+        // Use central api client so Authorization header is attached automatically
+        const { data: me } = await api.get('/auth/me')
         const wallet = (me?.wallets && me.wallets[0]) || me?.walletAddress || null
         if (!wallet) return
         const readOnly = await getReadOnlyContract()
@@ -107,7 +105,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
         const voted = !!(await readOnly.hasVoted(reqId, wallet))
         if (!cancelled) setHasAlreadyVoted(voted)
       } catch (err) {
-        // ignore
+        // ignore errors – treat as not voted
       }
     }
     checkHasVoted()
@@ -125,28 +123,28 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
     let cancelled = false
 
     const checkEligibility = async () => {
-      setIsLoading(true)
-      try {
-  // fetch current user from backend explicitly, include JWT if available
-  const token = (useAuthStore as any).getState ? (useAuthStore as any).getState().accessToken : null
-  const headers: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined
-  const meRes = await fetch('http://localhost:8080/api/auth/me', { headers })
-        if (!meRes.ok) {
-          setLastCheckAt(Date.now())
-          setLastCheckMsg('AUTH_ME_FAILED')
-          setIsEligibleVoter(false)
-          setHasAlreadyVoted(false)
-          return
-        }
-        const me = await meRes.json()
-        const currentUserWallet = (me?.wallets && me.wallets[0]) || me?.walletAddress || null
-        if (!currentUserWallet) {
-          setLastCheckAt(Date.now())
-          setLastCheckMsg('NO_WALLET_ON_AUTH_ME')
-          setIsEligibleVoter(false)
-          setHasAlreadyVoted(false)
-          return
-        }
+        setIsLoading(true)
+        try {
+          // Use central api client so Authorization header is attached automatically
+          let me: any = null
+          try {
+            const res = await api.get('/auth/me')
+            me = res.data
+          } catch (err) {
+            setLastCheckAt(Date.now())
+            setLastCheckMsg('AUTH_ME_FAILED')
+            setIsEligibleVoter(false)
+            setHasAlreadyVoted(false)
+            return
+          }
+          const currentUserWallet = (me?.wallets && me.wallets[0]) || me?.walletAddress || null
+          if (!currentUserWallet) {
+            setLastCheckAt(Date.now())
+            setLastCheckMsg('NO_WALLET_ON_AUTH_ME')
+            setIsEligibleVoter(false)
+            setHasAlreadyVoted(false)
+            return
+          }
 
         // Determine campaign id: prefer request props, otherwise derive from current URL pathname
         let campaignIdForCall: any = request?.campaign?.id ?? request?.campaignId
@@ -168,17 +166,20 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
 
         // Fetch donations from backend for this campaign
   // Use the frontend proxy (port 3000) for donations count per request
-  const donationsRes = await fetch(`http://localhost:3000/api/campaigns/${campaignIdForCall}/donations`, { headers })
-        if (!donationsRes.ok) {
+        // Fetch donations via frontend proxy so token and rewrites are used
+        let donationsList: any = []
+        try {
+          const res = await api.get(`/campaigns/${campaignIdForCall}/donations`)
+          donationsList = res.data
+        } catch (err) {
           setLastCheckAt(Date.now())
           setLastCheckMsg('DONATIONS_FETCH_FAILED')
           setIsEligibleVoter(false)
           setHasAlreadyVoted(false)
           return
         }
-  const donationsList = await donationsRes.json()
-  // Save locally for participation denominator and potential reuse
-  setDonationsList(Array.isArray(donationsList) ? donationsList : [])
+        // Save locally for participation denominator and potential reuse
+        setDonationsList(Array.isArray(donationsList) ? donationsList : [])
         if (!Array.isArray(donationsList) || donationsList.length === 0) {
           setLastCheckAt(Date.now())
           setLastCheckMsg('NO_DONATIONS')
@@ -193,9 +194,14 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
           const txHash = donation?.transactionHash
           if (!txHash) continue
           try {
-            const ownerRes = await fetch(`http://localhost:8080/api/donations/owner/${txHash}`, { headers })
-            if (!ownerRes.ok) continue
-            const ownerJson = await ownerRes.json()
+            // Use api client – owner lookup may require auth
+            let ownerJson: any = null
+            try {
+              const ownerRes = await api.get(`/donations/owner/${txHash}`)
+              ownerJson = ownerRes.data
+            } catch (err) {
+              continue
+            }
             const ownerAddress = ownerJson?.ownerAddress
             setLastCheckAt(Date.now())
             setLastCheckMsg(`OWNER_LOOKUP ${txHash} -> ${ownerAddress}`)
@@ -311,12 +317,11 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
         let totalVotingPowerWei: bigint = 0n
         if (campaignIdForCall) {
           try {
-            const balRes = await fetch(`http://localhost:3000/api/campaigns/${campaignIdForCall}/balance`, { headers: authHeaders })
-            if (balRes.ok) {
-              const bj = await balRes.json()
-              const balEth = Number(bj?.balance ?? 0)
-              if (isFinite(balEth) && balEth > 0) totalVotingPowerWei = ethers.parseEther(String(balEth))
-            }
+            // Use the api client (frontend proxy) so Authorization header is included
+            const r = await api.get(`/campaigns/${campaignIdForCall}/balance`)
+            const bj = r.data
+            const balEth = Number(bj?.balance ?? bj ?? 0)
+            if (isFinite(balEth) && balEth > 0) totalVotingPowerWei = ethers.parseEther(String(balEth))
           } catch {}
         }
         if (totalVotingPowerWei > 0n) {
@@ -359,8 +364,8 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
       }
       // Backend refresh broadcast
       try {
-        const resp = await fetch(`http://localhost:8080/api/campaigns/${request.campaignId}/withdrawals`)
-        const refreshed = resp.ok ? await resp.json() : null
+        const resp = await api.get(`/campaigns/${request.campaignId}/withdrawals`)
+        const refreshed = resp?.data ?? null
         if (typeof window !== 'undefined' && refreshed) window.dispatchEvent(new CustomEvent('withdrawalsUpdated', { detail: refreshed }))
       } catch {}
       alert(`Vote submitted: ${approve ? 'Approve' : 'Reject'}`)
@@ -379,10 +384,12 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   const { data: backendVoteCount } = useSWR(
     request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null,
     async ([path]) => {
-      const res = await fetch(`http://localhost:3000/api${path}`, { headers: authHeaders })
-      if (!res.ok) return 0
-      const j = await res.json()
-      return Number(j?.count ?? 0)
+      try {
+        const res = await api.get(path)
+        return Number(res.data?.count ?? 0)
+      } catch {
+        return 0
+      }
     },
     { refreshInterval: 5000 }
   )
@@ -400,9 +407,9 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   }, [backendVoteCount, donationsList, donations])
 
   return (
-    <div className="card p-4">
-      {/* Dev debug overlay - remove in production if noisy */}
-      <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/40">
+    <motion.div layout className="card p-4">
+      {/* Dev debug overlay - keep compact */}
+      <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/10">
         <div className="font-semibold mb-1">Eligibility Debug</div>
         <div className="grid grid-cols-2 gap-2 text-[12px]">
           <div className="opacity-80">Auth loading:</div>
@@ -445,84 +452,90 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
           </div>
         )}
       </div>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1">
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+        <div className="md:col-span-2">
           <div className="font-medium text-lg">{request?.purpose}</div>
           <div className="text-sm subtle">Amount: {request?.amount} ETH</div>
           <div className="text-sm subtle">Vendor: {request?.vendorAddress ?? '—'}</div>
           <div className={`px-2 py-1 inline-block rounded-full text-xs mt-2 ${badgeClass}`}>{status}</div>
-          <div className="mt-2 text-sm font-medium">
-            {voteDisplay.primary}
-            {voteDisplay.secondary && <span className="ml-1 text-xs opacity-60">{voteDisplay.secondary}</span>}
+          <div className="mt-3">
+            <div className="text-sm font-medium">{voteDisplay.primary}</div>
+            <div className="mt-2">
+              {/* Visual vote bar */}
+              {(() => {
+                const forVotes = Number((voteCounts.for ?? 0n).toString()) || 0
+                const againstVotes = Number((voteCounts.against ?? 0n).toString()) || 0
+                const total = Math.max(1, forVotes + againstVotes)
+                const pctFor = Math.round((forVotes / total) * 100)
+                const pctAgainst = 100 - pctFor
+                return (
+                  <div className="w-full bg-slate-100 rounded-md h-4 overflow-hidden border">
+                    <div className="relative h-4 flex">
+                      <div className="bg-emerald-500 h-4" style={{ width: `${pctFor}%` }} title={`For: ${forVotes} • Against: ${againstVotes}`} />
+                      <div className="bg-rose-500 h-4" style={{ width: `${pctAgainst}%` }} title={`Against: ${againstVotes} • For: ${forVotes}`} />
+                      <div style={{ left: '60%' }} className="absolute top-0 h-4 w-[1px] bg-white opacity-60 border-l border-dashed" />
+                    </div>
+                    <div className="mt-1 text-xs subtle">For: {forVotes} • Against: {againstVotes}</div>
+                  </div>
+                )
+              })()}
+            </div>
+
+            <div className="mt-2 text-xs subtle">{timeLeft.total > 0 ? `Voting ends in: ${timeLeft.days}d ${timeLeft.hours}h ${timeLeft.minutes}m` : 'Voting closed'}</div>
+            <div className="text-xs subtle mt-1">Submitted: {request?.createdAt ? formatDate(parseISO(String(request.createdAt)), 'PPpp') : '—'}</div>
           </div>
-          {timeLeft.total > 0 ? (
-            <div className="text-xs subtle">Voting ends in: {timeLeft.days}d {timeLeft.hours}h {timeLeft.minutes}m</div>
-          ) : (
-            <div className="text-xs subtle">Voting closed</div>
-          )}
-          <div className="text-xs subtle mt-1">Submitted: {request?.createdAt ? formatDate(parseISO(String(request.createdAt)), 'PPpp') : '—'}</div>
         </div>
-        <div className="flex flex-col items-end gap-3">
+
+        <div className="md:col-span-1 flex flex-col items-end gap-4">
           <div className="flex gap-2">
             {request?.financialProofUrl && (
-              <a className="btn-ghost text-sm" target="_blank" rel="noreferrer" href={`http://localhost:8080/uploads/${request.financialProofUrl}`}>Financial Proof</a>
+              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`/uploads/${request.financialProofUrl}`}>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h8m-8 4h6" /></svg>
+                Financial Proof
+              </a>
             )}
             {request?.visualProofUrl && (
-              <a className="btn-ghost text-sm" target="_blank" rel="noreferrer" href={`http://localhost:8080/uploads/${request.visualProofUrl}`}>Visual Proof</a>
+              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`/uploads/${request.visualProofUrl}`}>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l9 6 9-6" /></svg>
+                Visual Proof
+              </a>
             )}
           </div>
-          {status === 'PENDING_VOTE' && (
-            <div className="mt-2">
-              {/* Verbose voting render check for debugging state sync issues */}
-              {(() => {
-                try {
-                  console.log(`[VOTING RENDER CHECK for Request ${request?.onChainRequestId ?? request?.id}]`)
-                  console.log(`- Backend Status: ${String(request?.status)}`)
-                  console.log(`- Request onChainRequestId: ${String(request?.onChainRequestId ?? request?.onChainId ?? request?.id)}`)
-                  console.log(`- Voting Deadline (raw): ${String(request?.votingDeadline ?? onChainData?.votingDeadline ?? request?.votingDeadline)}`)
-                  try {
-                    const vd = request?.votingDeadline ?? onChainData?.votingDeadline
-                    console.log(`- Voting Deadline (Date): ${vd ? new Date(Number(vd) * (String(vd).length > 10 ? 1 : 1000)) : '—'}`)
-                  } catch (e) { console.log('- Voting Deadline (Date): parse error') }
-                  console.log(`- Is Deadline Passed?: ${Boolean(timeLeft && timeLeft.total <= 0)}`)
-                  console.log(`- TimeLeft (ms): ${timeLeft?.total ?? '—'}`)
-                  console.log(`- Is Authenticated?: ${String(isAuthenticated)}`)
-                  console.log(`- Is Eligible Voter?: ${String(isEligibleVoter)}`)
-                  console.log(`- Has Already Voted?: ${String(hasAlreadyVoted)}`)
-                  console.log(`- Local voteCounts: for=${voteCounts.for.toString()} against=${voteCounts.against.toString()}`)
-                  console.log(`- Donations count (denominator): ${Array.isArray(donationsList) ? donationsList.length : (Array.isArray(donations) ? donations.length : 0)}`)
-                } catch (err) {
-                  console.warn('VOTING RENDER CHECK failed', err)
-                }
-                return null
-              })()}
 
-              {timeLeft.total > 0 && (
-                <>
-                  {isLoading && (
-                    <p className="text-xs">Verifying your voter eligibility…</p>
-                  )}
-                  {!isLoading && !isEligibleVoter && (
-                    <p className="text-xs text-rose-600">Only verified donors to this campaign can vote.</p>
-                  )}
-                  {!isLoading && isEligibleVoter && hasAlreadyVoted && (
-                    <p className="text-xs subtle">You have already voted on this request.</p>
-                  )}
-                  {!isLoading && isEligibleVoter && !hasAlreadyVoted && (
-                    <div className="flex gap-2">
-                      <button disabled={voting} onClick={() => handleVote(true)} className="btn bg-emerald-600 hover:bg-emerald-700 text-white">APPROVE</button>
-                      <button disabled={voting} onClick={() => handleVote(false)} className="btn bg-rose-600 hover:bg-rose-700 text-white">REJECT</button>
-                    </div>
-                  )}
-                </>
-              )}
-              {timeLeft.total <= 0 && (
-                <div className="text-xs subtle">Voting closed</div>
-              )}
+          {status === 'PENDING_VOTE' && (
+            <div className="w-full">
+              <AnimatePresence>
+                {timeLeft.total > 0 && (
+                  <div className="w-full">
+                    {isLoading && (
+                      <p className="text-xs">Verifying your voter eligibility…</p>
+                    )}
+                    {!isLoading && !isEligibleVoter && (
+                      <p className="text-xs text-rose-600">Only verified donors to this campaign can vote.</p>
+                    )}
+                    {!isLoading && isEligibleVoter && hasAlreadyVoted && (
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-xs subtle">You have already voted on this request.</motion.div>
+                    )}
+                    {!isLoading && isEligibleVoter && !hasAlreadyVoted && (
+                      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-2">
+                        <button disabled={voting} onClick={() => handleVote(true)} className="btn inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2">
+                          {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>}
+                          <span>{voting ? 'Submitting vote...' : 'Approve'}</span>
+                        </button>
+                        <button disabled={voting} onClick={() => handleVote(false)} className="btn inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-4 py-2">
+                          {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>}
+                          <span>{voting ? 'Submitting vote...' : 'Reject'}</span>
+                        </button>
+                      </motion.div>
+                    )}
+                  </div>
+                )}
+              </AnimatePresence>
             </div>
           )}
         </div>
       </div>
-    </div>
+    </motion.div>
   )
 }

@@ -19,7 +19,8 @@ type Campaign = {
 }
 
 async function getCampaigns(): Promise<Campaign[]> {
-  const res = await fetch('http://localhost:8080/api/campaigns', { next: { revalidate: 0 } })
+  const backend = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'
+  const res = await fetch(`${backend}/api/campaigns`, { next: { revalidate: 0 } })
   if (!res.ok) {
     console.error('Failed to load campaigns', await res.text())
     throw new Error('Failed to load campaigns')
@@ -32,7 +33,8 @@ async function getCampaigns(): Promise<Campaign[]> {
 }
 
 async function getApprovedCharities(): Promise<Charity[]> {
-  const res = await fetch('http://localhost:8080/api/charities/approved', { next: { revalidate: 0 } })
+  const backend = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'
+  const res = await fetch(`${backend}/api/charities/approved`, { next: { revalidate: 0 } })
   if (!res.ok) return []
   const data = await res.json()
   if (Array.isArray(data)) return data

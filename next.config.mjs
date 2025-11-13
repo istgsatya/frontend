@@ -12,6 +12,12 @@ const nextConfig = {
         source: '/api/:path*',
         destination: 'http://localhost:8080/api/:path*'
       }
+      ,
+      {
+        // Proxy uploads so client can request /uploads/uuid without hitting CORS
+        source: '/uploads/:path*',
+        destination: 'http://localhost:8080/uploads/:path*'
+      }
     ];
   }
 };

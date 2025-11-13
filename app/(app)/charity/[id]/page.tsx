@@ -253,10 +253,10 @@ export default function CharityProfile() {
                 <div>{p.text}</div>
                 {p.mediaUrl && (
                   <img
-                    src={`http://localhost:8080/uploads/${p.mediaUrl}`}
+                    src={`/uploads/${p.mediaUrl}`}
                     alt="post"
                     className="rounded-xl max-h-96 object-cover w-full cursor-zoom-in"
-                    onClick={() => setLightbox(`http://localhost:8080/uploads/${p.mediaUrl}`)}
+                    onClick={() => setLightbox(`/uploads/${p.mediaUrl}`)}
                   />
                 )}
               </motion.div>

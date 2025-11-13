@@ -103,7 +103,8 @@ function CharityStatus() {
 
   const fetchPublic = async (charityId: string | number) => {
     try {
-      const url = `http://localhost:8080/api/charities/${charityId}/public`
+      const backend = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'
+      const url = `${backend}/api/charities/${charityId}/public`
       const res = await fetch(url)
       if (res.status === 200) {
         const d = await res.json()

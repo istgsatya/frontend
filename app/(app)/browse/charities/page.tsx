@@ -11,7 +11,8 @@ type Charity = {
 }
 
 async function getApprovedCharities(): Promise<Charity[]> {
-  const res = await fetch('http://localhost:8080/api/charities/approved', {
+  const backend = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8080'
+  const res = await fetch(`${backend}/api/charities/approved`, {
     // Always fetch fresh during dev; adjust if you want ISR later
     next: { revalidate: 0 },
   })

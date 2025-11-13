@@ -9,6 +9,7 @@ import { formatEth, formatINR, formatDateHuman } from '@/lib/format'
 import { getContract, getSigner, getProvider, ensureSepolia } from '@/lib/web3'
 import { parseEther } from 'ethers'
 import WithdrawalRequestCard from '@/components/WithdrawalRequestCard'
+import DonationCard from '@/components/DonationCard'
 import { motion } from 'framer-motion'
 
 export default function CampaignDetail() {
@@ -61,12 +62,21 @@ export default function CampaignDetail() {
     return () => { mounted = false }
   }, [id])
 
-  // SWR for withdrawals with 7s refresh to keep ledger live
-  // Backend withdrawals list: slower cadence (15s) per spec; on-chain tallies handled inside each card.
-  const { data: withdrawalsData, mutate: mutateWithdrawals } = useSWR(id ? `/campaigns/${id}/withdrawals` : null, fetcher, { refreshInterval: 15000 })
+  // SWR for withdrawals with 15s refresh to keep ledger live
+  // Backend withdrawals list: slower cadence per spec; on-chain tallies handled inside each card.
+  const { data: withdrawalsData, error: withdrawalsError, isValidating: isLoadingWithdrawals, mutate: mutateWithdrawals } = useSWR(id ? `/campaigns/${id}/withdrawals` : null, fetcher, { refreshInterval: 15000 })
+
   useEffect(() => {
-    if (Array.isArray(withdrawalsData)) setWithdrawals(withdrawalsData)
-  }, [withdrawalsData])
+    if (withdrawalsData) {
+      // eslint-disable-next-line no-console
+      console.log('!!!!!!!!!! WITHDRAWALS DATA RECEIVED FROM SWR:', withdrawalsData)
+      if (Array.isArray(withdrawalsData)) setWithdrawals(withdrawalsData)
+    }
+    if (withdrawalsError) {
+      // eslint-disable-next-line no-console
+      console.error('!!!!!!!!!! FAILED TO FETCH WITHDRAWALS:', withdrawalsError)
+    }
+  }, [withdrawalsData, withdrawalsError])
 
   // Poll for live updates every 7 seconds for other resources
   useEffect(() => {
@@ -86,15 +96,50 @@ export default function CampaignDetail() {
     return () => clearInterval(iv)
   }, [id])
 
+  // SWR for donations (keeps the donations list fresh and drives UI state)
+  const { data: donationsData, error: donationsError, isValidating: isLoadingDonations } = useSWR(id ? `/campaigns/${id}/donations` : null, fetcher)
+
+  useEffect(() => {
+    if (donationsData) {
+      // eslint-disable-next-line no-console
+      console.log('!!!!!!!!!! DONATIONS DATA RECEIVED FROM SWR:', donationsData)
+      setDonations(donationsData)
+    }
+    if (donationsError) {
+      // eslint-disable-next-line no-console
+      console.error('!!!!!!!!!! FAILED TO FETCH DONATIONS:', donationsError)
+    }
+  }, [donationsData, donationsError])
+
   // When the fiat input changes, refresh the price (debounced) to show ETH equivalent
   useEffect(() => {
     if (!amountFiat) return
     const t = setTimeout(() => {
-      fetchEthPrice('inr').then(setEthToInrRate).catch(() => {})
+      // Aggressive diagnostics: log the input and the fact we're refetching
+      // eslint-disable-next-line no-console
+      console.debug('[campaign] debounced price fetch for amountFiat=', amountFiat)
+      fetchEthPrice('inr')
+        .then(rate => {
+          // eslint-disable-next-line no-console
+          console.debug('[campaign] fetched eth->inr rate:', rate)
+          setEthToInrRate(rate)
+        })
+        .catch(err => {
+          // eslint-disable-next-line no-console
+          console.error('[campaign] fetchEthPrice error:', err?.message || err)
+        })
     }, 300)
     return () => clearTimeout(t)
   }, [amountFiat])
-  const ethAmount = useMemo(() => fiatToEth(parseFloat(amountFiat || '0'), ethToInrRate), [amountFiat, ethToInrRate])
+  const ethAmount = useMemo(() => {
+    const parsed = parseFloat(amountFiat || '0')
+    // eslint-disable-next-line no-console
+    console.debug('[campaign] computing ethAmount from parsedFiat=', parsed, 'price=', ethToInrRate)
+    const val = fiatToEth(parsed, ethToInrRate)
+    // eslint-disable-next-line no-console
+    console.debug('[campaign] computed ethAmount=', val)
+    return val
+  }, [amountFiat, ethToInrRate])
 
   // Listen for withdrawal refresh events from WithdrawalRequestCard and update list
   useEffect(() => {
@@ -152,6 +197,10 @@ export default function CampaignDetail() {
     try {
       setDonating(true)
       setDonateSuccess(false)
+      // Defensive guard: ensure computed ETH amount is valid and > 0
+      if (!isFinite(ethAmount) || ethAmount <= 0) {
+        throw new Error('Donation amount must be > 0 ETH — price unavailable or amount invalid')
+      }
       const contract = await getContract()
       if (!contract) throw new Error('Contract not configured')
   const onChainId = BigInt(campaign?.onChainId ?? campaign?.id)
@@ -310,7 +359,7 @@ export default function CampaignDetail() {
       <section className="space-y-3">
         <h1 className="heading">{campaign.title}</h1>
         <p className="text-slate-700">{campaign.description}</p>
-        <div className="subtle">Goal: {campaign.goal}</div>
+  <div className="subtle">Goal: {formatINR(Number(campaign?.goalAmount ?? campaign?.goal ?? 0) * (ethToInrRate || 0), 0)} {`• ${formatEth(Number(campaign?.goalAmount ?? campaign?.goal ?? 0), 6)} ETH`}</div>
         {/* Progress Bar — use on-chain balance as source of truth */}
         <div className="flex items-center gap-4">
           <div className="flex-1">
@@ -328,12 +377,16 @@ export default function CampaignDetail() {
           ) : (
             <button
               onClick={donate}
-              disabled={donating || (
-                (user as any)?.roles?.includes?.('ROLE_CHARITY_ADMIN') && (
-                    // campaign may have charityId or campaign.charity?.id; user may have charityId
-                    String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(campaign?.charityId ?? campaign?.charity?.id)
-                  )
-              )}
+              disabled={
+                donating ||
+                !isFinite(ethAmount) ||
+                ethAmount <= 0 ||
+                ((user as any)?.roles?.includes?.('ROLE_CHARITY_ADMIN') && (
+                  // campaign may have charityId or campaign.charity?.id; user may have charityId
+                  String((user as any)?.charityId ?? (user as any)?.charity?.id) === String(campaign?.charityId ?? campaign?.charity?.id)
+                ))
+              }
+              title={(!isFinite(ethAmount) || ethAmount <= 0) ? 'Donation amount invalid or price unavailable' : undefined}
               className="btn-primary w-full sm:w-auto relative overflow-hidden disabled:opacity-70"
             >
             {!donateSuccess ? (
@@ -371,33 +424,18 @@ export default function CampaignDetail() {
       <section>
         <h2 className="text-xl font-semibold mb-3">Donations</h2>
         <div className="space-y-3">
-          {Array.isArray(donations) && donations.length > 0 ? (
-            <div className="card p-4">
-              <ul className="space-y-2 text-sm">
-                {donations.map((d: any) => {
-                  // Resolve donation amounts robustly: server may provide fiat or ETH fields
-                  const ethAmt = Number(d?.amount ?? d?.amountEth ?? d?.value ?? 0)
-                  const serverFiat = Number(d?.amountFiat ?? d?.amountInr ?? d?.fiatAmount ?? 0)
-                  const inrValue = (serverFiat && serverFiat > 0) ? serverFiat : ((ethToInrRate && ethAmt) ? ethAmt * ethToInrRate : 0)
-                  return (
-                    <li key={d.id || d.transactionHash} className="flex justify-between items-start">
-                      <div className="max-w-lg">
-                        <div className="font-medium">{d.username ?? d.donorName ?? d.from ?? (d.from?.slice ? `${d.from.slice(0,6)}...${d.from.slice(-4)}` : 'Anonymous')}</div>
-                                    <div className="subtle text-xs">{formatDateHuman(d.createdAt)} • {d.campaignTitle ? <a className="underline text-brand-700" href={`/campaign/${d.campaignId}`}>{d.campaignTitle}</a> : null}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-semibold">{formatINR(Number(inrValue) || 0, 0)}</div>
-                        {ethAmt ? <div className="text-xs subtle mt-1">≈ {typeof ethAmt === 'number' ? formatEth(ethAmt, 6) : ethAmt} ETH</div> : null}
-                        {ethAmt ? <div className="text-xs subtle mt-1">{formatEth(ethAmt, 6)} • ≈ {formatINR(ethAmt * (ethToInrRate || 0), 0)}</div> : null}
-                        <div className="text-xs mt-1">{d.transactionHash ? <a target="_blank" rel="noreferrer" href={`https://sepolia.etherscan.io/tx/${d.transactionHash}`} className="underline text-brand-700">View on Etherscan</a> : <span className="subtle">—</span>}</div>
-                      </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            </div>
+          {isLoadingDonations ? (
+            <p>Loading donation history...</p>
+          ) : donations && donations.length > 0 ? (
+            <motion.div initial="hidden" animate="visible" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {donations.map((donation: any, idx: number) => (
+                <motion.div key={donation.id || donation.transactionHash} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.06 }}>
+                  <DonationCard donation={donation} ethToInrRate={ethToInrRate} />
+                </motion.div>
+              ))}
+            </motion.div>
           ) : (
-            <div className="text-sm subtle">No donations yet</div>
+            <p>No donations yet.</p>
           )}
         </div>
       </section>
@@ -405,12 +443,17 @@ export default function CampaignDetail() {
       <section>
         <h2 className="text-xl font-semibold mb-3">Withdrawal History</h2>
         <div className="space-y-3">
-          {Array.isArray(withdrawals) && withdrawals.length > 0 ? (
-            withdrawals.map((w) => (
-              <WithdrawalRequestCard key={w.id} request={w} />
-            ))
+          {/* This goes inside the Withdrawal History section */}
+          {isLoadingWithdrawals ? (
+            <p>Loading withdrawal history...</p>
+          ) : withdrawals && withdrawals.length > 0 ? (
+            <div className="space-y-4">
+              {withdrawals.map((request) => (
+                <WithdrawalRequestCard key={request.id} request={request} />
+              ))}
+            </div>
           ) : (
-            <div className="text-sm subtle">No withdrawal requests have been made yet.</div>
+            <p>No withdrawal requests have been made yet.</p>
           )}
         </div>
       </section>
