@@ -4,7 +4,7 @@ import { ethers } from 'ethers'
 import { motion, AnimatePresence } from 'framer-motion'
 import { getContract, getSigner } from '@/lib/web3'
 import { api } from '@/lib/api'
-import useSWR, { mutate } from 'swr'
+import { mutate } from 'swr'
 import useCountdown from '@/lib/hooks/useCountdown'
 import useOnChainWithdrawalData from '@/lib/hooks/useOnChainWithdrawalData'
 import { useAuthStore } from '@/lib/store/auth'
@@ -35,6 +35,10 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // Live on-chain vote counts (BigInt) fetched via consolidated hook
   const [voteCounts, setVoteCounts] = useState<{ for: bigint; against: bigint }>({ for: 0n, against: 0n })
 
+  // Backend-derived participation & user vote state
+  const [voteCount, setVoteCount] = useState<number>(0)
+  const [userHasVoted, setUserHasVoted] = useState<boolean>(false)
+
   // Consolidated, sequential on-chain fetch to avoid RPC spam
   const { data: onChainAll, error: onChainErr, isLoading: isLoadingOnChain, mutate: mutateOnChain } = useOnChainWithdrawalData(onChainRequestId, request?.campaign?.id ?? request?.campaignId)
 
@@ -63,6 +67,28 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
 
   // Note: polling is handled inside the consolidated hook (refreshInterval),
   // so we avoid additional intervals here to prevent RPC spam.
+
+  // On mount, fetch backend vote count and whether current user has voted
+  useEffect(() => {
+    let cancelled = false
+    const fetchBackend = async () => {
+      if (!request?.id) return
+      try {
+        const vc = await api.get(`/withdrawals/${request.id}/votecount`)
+        if (!cancelled) setVoteCount(Number(vc?.data ?? vc?.data?.count ?? 0))
+      } catch (e) {
+        if (isDev) console.warn('Failed to fetch backend votecount', e)
+      }
+      try {
+        const hv = await api.get(`/withdrawals/${request.id}/has-voted`)
+        if (!cancelled) setUserHasVoted(Boolean(hv?.data?.hasVoted ?? hv?.data ?? false))
+      } catch (e) {
+        if (isDev) console.warn('Failed to fetch backend has-voted', e)
+      }
+    }
+    fetchBackend()
+    return () => { cancelled = true }
+  }, [request?.id, token])
 
   // Ensure we know whether the current user already voted by probing the read-only contract
   useEffect(() => {
@@ -220,19 +246,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   })()
   const timeLeft = useCountdown(rawDeadline)
 
-  // Derive vote amounts (ETH + INR) once data + price available
-  const { data: backendVoteCount, mutate: mutateBackendVoteCount } = useSWR(
-    request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null,
-    async ([path]) => {
-      try {
-        const res = await api.get(path)
-        return Number(res.data?.count ?? 0)
-      } catch {
-        return 0
-      }
-    },
-    { refreshInterval: 5000 }
-  )
+  // backend voteCount is stored in local state `voteCount` and updated via useEffect / post-vote refresh
 
   async function handleVote(approve: boolean) {
     try {
@@ -281,24 +295,22 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
       try {
         // Force revalidation of on-chain data (await so subsequent UI uses fresh values)
         try { await mutateOnChain() } catch (e) { if (isDev) console.warn('mutateOnChain failed', e) }
-
         // Optimistic local update: mark user as having voted so buttons disappear instantly
         setHasAlreadyVoted(true)
+        setUserHasVoted(true)
 
-        // Optimistically increment backend vote count so Participation updates immediately without waiting for backend
+        // Refresh backend vote count immediately so Participation updates without waiting for polling
         try {
-          const key = request?.id ? [`/withdrawals/${request.id}/votecount`, token] : null
-          if (key && typeof mutateBackendVoteCount === 'function') {
-            const prev = Number(backendVoteCount ?? 0)
-            // Update SWR cache locally without revalidation
-            await mutateBackendVoteCount(prev + 1, false)
-            // Kick off a background revalidation to ensure backend eventually agrees
-            try { mutate(key) } catch {}
-          } else if (key) {
-            // Fallback: trigger global mutate if hook-local mutate not available
-            try { mutate(key) } catch {}
+          if (request?.id) {
+            const vc = await api.get(`/withdrawals/${request.id}/votecount`)
+            setVoteCount(Number(vc?.data?.count ?? vc?.data ?? 0))
+            // Also confirm has-voted from backend (best-effort)
+            try {
+              const hv = await api.get(`/withdrawals/${request.id}/has-voted`)
+              setUserHasVoted(Boolean(hv?.data?.hasVoted ?? hv?.data ?? true))
+            } catch {}
           }
-        } catch (e) { if (isDev) console.warn('mutateBackendVoteCount failed', e) }
+        } catch (e) { if (isDev) console.warn('refresh backend votecount failed', e) }
       } catch {}
       // After voting, probe on-chain tallies and possibly trigger early execution if threshold crossed
       try {
@@ -381,19 +393,80 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
 
   const status = request?.status
   const badgeClass = status === 'EXECUTED' ? 'bg-emerald-100 text-emerald-800' : status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-  const showButtons = status === 'PENDING_VOTE' && timeLeft.total > 0 && !hasAlreadyVoted && isEligibleVoter
+  const showButtons = status === 'PENDING_VOTE' && timeLeft.total > 0 && !userHasVoted && isEligibleVoter
 
   const voteDisplay = useMemo(() => {
     // Participation metric: X of Y donors have voted
     const donorsArr = Array.isArray(donationsList) ? donationsList : (Array.isArray(donations) ? donations : [])
     const uniqueDonors = new Set<string>(donorsArr.map((d: any) => String(d?.username ?? '')).filter(Boolean))
     const y = uniqueDonors.size
-    const x = Number(backendVoteCount ?? 0)
+    const x = Number(voteCount ?? 0)
     return {
       primary: `Participation: ${x} of ${y} Donors Have Voted`,
       secondary: ''
     }
-  }, [backendVoteCount, donationsList, donations])
+  }, [voteCount, donationsList, donations])
+
+  // If the request is finalized (not pending vote), render a detailed read-only "Permanent Record"
+  if (status && status !== 'PENDING_VOTE') {
+    const donorsArr = Array.isArray(donationsList) ? donationsList : (Array.isArray(donations) ? donations : [])
+    const uniqueDonors = new Set<string>(donorsArr.map((d: any) => String(d?.username ?? '')).filter(Boolean))
+    const totalDonors = uniqueDonors.size
+    const finalizedOn = request?.updatedAt ? new Date(String(request.updatedAt)).toLocaleDateString() : (request?.updatedAt ? String(request.updatedAt) : '—')
+    const vendor = request?.vendorAddress ?? request?.vendor
+  const explorer: string | undefined = vendor ? `https://sepolia.etherscan.io/address/${vendor}` : undefined
+    const rejectionReason = request?.rejectionReason ?? request?.reason ?? request?.adminReason ?? null
+
+    const badge = (() => {
+      if (status === 'EXECUTED') return <span className="px-2 py-1 rounded-full text-sm bg-emerald-100 text-emerald-800">STATUS: EXECUTED ✔️</span>
+      if (status === 'REJECTED') return <span className="px-2 py-1 rounded-full text-sm bg-rose-100 text-rose-800">STATUS: REJECTED ❌</span>
+      return <span className="px-2 py-1 rounded-full text-sm bg-amber-100 text-amber-800">STATUS: {String(status).replace(/_/g, ' ')} ⏳</span>
+    })()
+
+    return (
+      <motion.div layout className="card p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            {badge}
+            <div className="text-lg font-semibold">{request?.purpose ?? 'Withdrawal Request'}</div>
+          </div>
+          <div className="text-sm subtle">Finalized On: {finalizedOn}</div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="md:col-span-2">
+            <div className="mb-2 text-sm">Amount: <strong>{request?.amount ?? '—'} ETH</strong></div>
+            <div className="mb-2 text-sm">Paid To: {vendor ? (<a className="text-blue-600 underline" target="_blank" rel="noreferrer" href={explorer}>{vendor}</a>) : '—'}</div>
+            {rejectionReason && (
+              <div className="mb-2 text-sm text-rose-700">Reason: {rejectionReason}</div>
+            )}
+
+            <div className="mt-4">
+              <div className="text-sm font-medium">Outcome: Approved by {Number(voteCount ?? 0)} of {totalDonors} voters.</div>
+            </div>
+          </div>
+
+          <div className="md:col-span-1 flex flex-col items-end gap-3">
+            <div className="flex flex-col gap-2 w-full">
+              {request?.financialProofUrl && (
+                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`/uploads/${request.financialProofUrl}`}>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h8m-8 4h6" /></svg>
+                  Financial Proof
+                </a>
+              )}
+              {request?.visualProofUrl && (
+                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`/uploads/${request.visualProofUrl}`}>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l9 6 9-6" /></svg>
+                  Visual Proof
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+
+      </motion.div>
+    )
+  }
 
   return (
     <motion.div layout className="card p-4">
@@ -503,16 +576,16 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
                     {!isLoading && !isEligibleVoter && (
                       <p className="text-xs text-rose-600">Only verified donors to this campaign can vote.</p>
                     )}
-                    {!isLoading && isEligibleVoter && hasAlreadyVoted && (
+                    {!isLoading && isEligibleVoter && userHasVoted && (
                       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-xs subtle">You have already voted on this request.</motion.div>
                     )}
-                    {!isLoading && isEligibleVoter && !hasAlreadyVoted && (
+                    {!isLoading && isEligibleVoter && !userHasVoted && (
                       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-2">
-                        <button disabled={voting} onClick={() => handleVote(true)} className="btn inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2">
+                        <button disabled={voting || userHasVoted} onClick={() => handleVote(true)} className="btn inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2">
                           {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>}
                           <span>{voting ? 'Submitting vote...' : 'Approve'}</span>
                         </button>
-                        <button disabled={voting} onClick={() => handleVote(false)} className="btn inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-4 py-2">
+                        <button disabled={voting || userHasVoted} onClick={() => handleVote(false)} className="btn inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-4 py-2">
                           {voting ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg> : <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>}
                           <span>{voting ? 'Submitting vote...' : 'Reject'}</span>
                         </button>
