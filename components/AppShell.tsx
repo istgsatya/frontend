@@ -18,7 +18,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isAuthRoute = pathname?.startsWith('/login') || pathname?.startsWith('/signup') || pathname === '/account-verified'
 
   const isLanding = pathname === '/'
-  const hideFooter = isLanding || pathname?.startsWith('/login') || pathname?.startsWith('/signup')
+  // Always show footer (including landing), hide only on auth routes where minimal UI is desired
+  const hideFooter = pathname?.startsWith('/login') || pathname?.startsWith('/signup')
 
   return (
     // When auth state is being determined, show a full-screen loader to avoid UI flicker
