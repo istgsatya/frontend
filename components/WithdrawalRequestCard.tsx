@@ -249,10 +249,6 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // backend voteCount is stored in local state `voteCount` and updated via useEffect / post-vote refresh
 
   async function handleVote(approve: boolean) {
-    // Gate the intrusive debug alert behind dev-only behavior
-    if (process.env.NODE_ENV !== 'production') {
-      alert('Vote clicked (dev)')
-    }
     console.log('--------------------')
     console.log('VOTE DEBUG: handleVote function initiated.')
 
@@ -301,7 +297,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
       } catch (err) {
         console.error('VOTE DEBUG: Backend verification API call failed', err)
         // DO NOT re-throw the error. Handle it. Show a user-friendly message.
-        alert('Your vote was recorded on the blockchain, but the server failed to verify the transaction. Please refresh the page.')
+        if (typeof window !== 'undefined') window.alert('Vote on-chain confirmed, but backend verification failed — please refresh.')
         // We stop here because the backend state is now out of sync.
         return
       }
@@ -403,13 +399,13 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
           <div className="md:col-span-1 flex flex-col items-end gap-3">
             <div className="flex flex-col gap-2 w-full">
               {request?.financialProofUrl && (
-                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`/uploads/${request.financialProofUrl}`}>
+                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`https://gateway.pinata.cloud/ipfs/${request.financialProofUrl}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h8m-8 4h6" /></svg>
                   Financial Proof
                 </a>
               )}
               {request?.visualProofUrl && (
-                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`/uploads/${request.visualProofUrl}`}>
+                <a className="btn-ghost text-sm inline-flex items-center gap-2 justify-start" target="_blank" rel="noreferrer" href={`https://gateway.pinata.cloud/ipfs/${request.visualProofUrl}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l9 6 9-6" /></svg>
                   Visual Proof
                 </a>
@@ -425,49 +421,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   return (
     <motion.div layout className="card p-4">
       {/* Dev debug overlay - keep compact */}
-  <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/10 dark:bg-white/5 dark:border-white/10">
-        <div className="font-semibold mb-1">Eligibility Debug</div>
-        <div className="grid grid-cols-2 gap-2 text-[12px]">
-          <div className="opacity-80">Auth loading:</div>
-          <div>{String(authLoading)}</div>
-
-          <div className="opacity-80">Is authenticated:</div>
-          <div>{String(isAuthenticated)}</div>
-
-          <div className="opacity-80">User wallet:</div>
-          <div>{user?.wallets?.[0]?.address ?? '—'}</div>
-
-          <div className="opacity-80">Campaign ID:</div>
-          <div>{request?.campaign?.id ?? request?.campaignId ?? '—'}</div>
-
-          <div className="opacity-80">On-chain Request ID:</div>
-          <div>{onChainRequestId ?? '—'}</div>
-
-          <div className="opacity-80">Backend hasDonated:</div>
-          <div>{String(debugHasDonated)}</div>
-
-          <div className="opacity-80">On-chain hasVoted:</div>
-          <div>{String(hasAlreadyVoted)}</div>
-
-          <div className="opacity-80">isEligibleVoter:</div>
-          <div>{String(isEligibleVoter)}</div>
-
-          <div className="opacity-80">Last check time:</div>
-          <div>{lastCheckAt ? new Date(lastCheckAt).toLocaleString() : '—'}</div>
-
-          <div className="opacity-80">Last check msg:</div>
-          <div className="break-words">{lastCheckMsg ?? '—'}</div>
-        </div>
-        {onChainAll?.requestData && (
-          <div className="mt-2 text-[12px]">
-            <div className="opacity-80">On-chain votes (ETH):</div>
-            <div>
-              For: {onChainAll?.requestData?.votesFor ? formatEth(Number(ethers.formatEther(onChainAll.requestData.votesFor))) : '—'}
-              {' '}Against: {onChainAll?.requestData?.votesAgainst ? formatEth(Number(ethers.formatEther(onChainAll.requestData.votesAgainst))) : '—'}
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Debug panel removed for production polish */}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
         <div className="md:col-span-2">
@@ -506,13 +460,13 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
         <div className="md:col-span-1 flex flex-col items-end gap-4">
           <div className="flex gap-2">
             {request?.financialProofUrl && (
-              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`/uploads/${request.financialProofUrl}`}>
+              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`https://gateway.pinata.cloud/ipfs/${request.financialProofUrl}`}>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h8m-8 4h6" /></svg>
                 Financial Proof
               </a>
             )}
             {request?.visualProofUrl && (
-              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`/uploads/${request.visualProofUrl}`}>
+              <a className="btn-ghost text-sm inline-flex items-center gap-2" target="_blank" rel="noreferrer" href={`https://gateway.pinata.cloud/ipfs/${request.visualProofUrl}`}>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V7M3 7l9 6 9-6" /></svg>
                 Visual Proof
               </a>
