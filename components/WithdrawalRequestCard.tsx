@@ -249,8 +249,10 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   // backend voteCount is stored in local state `voteCount` and updated via useEffect / post-vote refresh
 
   async function handleVote(approve: boolean) {
-    // THIS IS THE MOST IMPORTANT LINE IN THE ENTIRE PROJECT
-    alert('!!! VOTE BUTTON CLICKED !!!')
+    // Gate the intrusive debug alert behind dev-only behavior
+    if (process.env.NODE_ENV !== 'production') {
+      alert('Vote clicked (dev)')
+    }
     console.log('--------------------')
     console.log('VOTE DEBUG: handleVote function initiated.')
 
@@ -340,7 +342,11 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   }
 
   const status = request?.status
-  const badgeClass = status === 'EXECUTED' ? 'bg-emerald-100 text-emerald-800' : status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+  const badgeClass = status === 'EXECUTED'
+    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200'
+    : status === 'REJECTED'
+    ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200'
+    : 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
   const showButtons = status === 'PENDING_VOTE' && timeLeft.total > 0 && !userHasVoted && isEligibleVoter
 
   const voteDisplay = useMemo(() => {
@@ -419,7 +425,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
   return (
     <motion.div layout className="card p-4">
       {/* Dev debug overlay - keep compact */}
-      <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/10">
+  <div className="text-xs subtle mb-2 p-3 border rounded bg-gray-900/10 dark:bg-white/5 dark:border-white/10">
         <div className="font-semibold mb-1">Eligibility Debug</div>
         <div className="grid grid-cols-2 gap-2 text-[12px]">
           <div className="opacity-80">Auth loading:</div>
@@ -480,7 +486,7 @@ export default function WithdrawalRequestCard({ request, donations, isLoadingDon
                 const pctFor = Math.round((forVotes / total) * 100)
                 const pctAgainst = 100 - pctFor
                 return (
-                  <div className="w-full bg-slate-100 rounded-md h-4 overflow-hidden border">
+                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-md h-4 overflow-hidden border dark:border-white/10">
                     <div className="relative h-4 flex">
                       <div className="bg-emerald-500 h-4" style={{ width: `${pctFor}%` }} title={`For: ${forVotes} • Against: ${againstVotes}`} />
                       <div className="bg-rose-500 h-4" style={{ width: `${pctAgainst}%` }} title={`Against: ${againstVotes} • For: ${forVotes}`} />

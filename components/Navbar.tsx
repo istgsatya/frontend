@@ -20,9 +20,9 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-40">
-      <div className="border-b border-white/30 bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+      <div className="border-b border-white/30 bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:border-white/10 dark:bg-slate-900/70 supports-[backdrop-filter]:dark:bg-slate-900/60">
         <div className="container flex items-center justify-between h-16">
-          <Link href="/" className="font-semibold text-lg tracking-tight text-slate-900">
+          <Link href="/" className="font-semibold text-lg tracking-tight text-slate-900 dark:text-slate-100">
             <span className="bg-gradient-to-r from-brand-600 to-emerald-500 bg-clip-text text-transparent">Transparent Cents</span>
           </Link>
           <nav className="relative flex items-center gap-3">
@@ -30,7 +30,7 @@ export function Navbar() {
             {typeof window !== 'undefined' && (
               <div className="hidden sm:flex items-center gap-3 mr-2">
                 {connectedAddress ? (
-                  <div className="flex items-center gap-2 bg-black/5 px-3 py-1 rounded text-sm">
+                  <div className="flex items-center gap-2 bg-black/5 dark:bg-white/10 px-3 py-1 rounded text-sm text-slate-700 dark:text-slate-200">
                     <span className="font-mono">{`${connectedAddress.slice(0,6)}...${connectedAddress.slice(-4)}`}</span>
                     <button
                       onClick={async () => {
@@ -115,7 +115,7 @@ export function Navbar() {
 
             {!isAuthenticated ? (
               <>
-                <Link href="/login" className="btn-ghost text-slate-700">Login</Link>
+                <Link href="/login" className="btn-ghost text-slate-700 dark:text-slate-200">Login</Link>
                 <Link href="/signup" className="btn-primary">Sign Up</Link>
               </>
             ) : (
@@ -126,8 +126,8 @@ export function Navbar() {
                 </button>
                 {open && (
                   <div className="absolute right-0 mt-2 w-48 card p-2 z-50">
-                    <Link href="/my-account" className="block px-3 py-2 rounded hover:bg-black/5" onClick={() => setOpen(false)}>My Account</Link>
-                    <button onClick={() => { setOpen(false); logout(); router.replace('/login') }} className="w-full text-left px-3 py-2 rounded hover:bg-black/5">Logout</button>
+                    <Link href="/my-account" className="block px-3 py-2 rounded hover:bg-black/5 dark:hover:bg-white/10" onClick={() => setOpen(false)}>My Account</Link>
+                    <button onClick={() => { setOpen(false); logout(); router.replace('/login') }} className="w-full text-left px-3 py-2 rounded hover:bg-black/5 dark:hover:bg-white/10">Logout</button>
                   </div>
                 )}
               </div>

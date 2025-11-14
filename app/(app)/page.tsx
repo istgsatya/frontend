@@ -80,11 +80,11 @@ export default function HomePage() {
     <div className="relative space-y-16">
       {/* Global soft gradient background */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-gradient-to-b from-sky-50 via-white to-violet-50" />
-        <div className="absolute -top-32 -left-24 h-[34rem] w-[34rem] blur-3xl rounded-full bg-[radial-gradient(circle_at_center,_rgba(56,189,248,0.25),_transparent_60%)]" />
-        <div className="absolute -bottom-40 -right-24 h-[36rem] w-[36rem] blur-3xl rounded-full bg-[radial-gradient(circle_at_center,_rgba(167,139,250,0.25),_transparent_60%)]" />
+        <div className="absolute inset-0 bg-gradient-to-b from-slate-900 via-slate-950 to-black" />
+        <div className="absolute -top-32 -left-24 h-[34rem] w-[34rem] blur-3xl rounded-full bg-[radial-gradient(circle_at_center,_rgba(34,197,94,0.16),_transparent_60%)]" />
+        <div className="absolute -bottom-40 -right-24 h-[36rem] w-[36rem] blur-3xl rounded-full bg-[radial-gradient(circle_at_center,_rgba(168,85,247,0.14),_transparent_60%)]" />
         {/* Background image layer for extra depth */}
-        <div className="absolute inset-0 opacity-60" style={{ backgroundImage: "url(/hero-bg.svg)", backgroundSize: 'cover', backgroundRepeat: 'no-repeat', backgroundPosition: 'center' }} />
+        <div className="absolute inset-0 opacity-40" style={{ backgroundImage: "url(/hero-bg.svg)", backgroundSize: 'cover', backgroundRepeat: 'no-repeat', backgroundPosition: 'center' }} />
       </div>
       {/* Authenticated charities section intentionally removed per request */}
       {/* Public Hero (only when logged out) */}
@@ -95,7 +95,7 @@ export default function HomePage() {
         <div className="pointer-events-none select-none absolute -bottom-10 -right-10 h-56 w-56 bg-emerald-400/20 blur-3xl rounded-full" />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center relative">
           <motion.div variants={fadeUp} initial="hidden" whileInView="show" viewport={{ once: true }}>
-            <h1 className="text-4xl sm:text-5xl font-bold leading-tight">
+            <h1 className="text-4xl sm:text-5xl font-bold leading-tight text-slate-100">
               <span>Join the Giving Revolution</span>
               <br />
               <span className="bg-gradient-to-r from-brand-600 via-emerald-600 to-sky-600 bg-clip-text text-transparent">Full transparency, on-chain.</span>
@@ -117,15 +117,15 @@ export default function HomePage() {
             {charityCount > 0 && (
               <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <div className="card p-4 text-center">
-                  <div className="text-2xl font-bold">{campaignCount}</div>
+                  <div className="text-2xl font-bold text-slate-100">{campaignCount}</div>
                   <div className="text-xs subtle">Active Campaigns</div>
                 </div>
                 <div className="card p-4 text-center">
-                  <div className="text-2xl font-bold">{charityCount}</div>
+                  <div className="text-2xl font-bold text-slate-100">{charityCount}</div>
                   <div className="text-xs subtle">Approved Charities</div>
                 </div>
                 <div className="card p-4 text-center hidden sm:block">
-                  <div className="text-2xl font-bold">On‑chain</div>
+                  <div className="text-2xl font-bold text-slate-100">On‑chain</div>
                   <div className="text-xs subtle">Verifiable Impact</div>
                 </div>
               </div>
@@ -143,12 +143,12 @@ export default function HomePage() {
           >
             <div className="glass-deeper hero-bg rounded-2xl p-6 h-full flex items-center justify-center">
               <svg width="320" height="200" viewBox="0 0 320 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="16" y="16" width="288" height="168" rx="16" className="fill-white/70" />
+                <rect x="16" y="16" width="288" height="168" rx="16" className="fill-white/10" />
                 <rect x="32" y="40" width="80" height="12" rx="6" className="fill-brand-500/80" />
-                <rect x="32" y="64" width="200" height="8" rx="4" className="fill-black/10" />
-                <rect x="32" y="80" width="240" height="8" rx="4" className="fill-black/10" />
+                <rect x="32" y="64" width="200" height="8" rx="4" className="fill-white/15" />
+                <rect x="32" y="80" width="240" height="8" rx="4" className="fill-white/15" />
                 <rect x="32" y="120" width="120" height="12" rx="6" className="fill-emerald-500/80" />
-                <rect x="32" y="144" width="180" height="8" rx="4" className="fill-black/10" />
+                <rect x="32" y="144" width="180" height="8" rx="4" className="fill-white/15" />
               </svg>
             </div>
           </motion.div>
@@ -159,7 +159,7 @@ export default function HomePage() {
   {!isAuthed && (
   <section className="container" id="features">
         <div className="text-center max-w-2xl mx-auto">
-          <h2 className="text-3xl font-bold">Built for radical transparency</h2>
+          <h2 className="text-3xl font-bold text-slate-100">Built for radical transparency</h2>
           <p className="mt-2 subtle">Everything you need to build trust and drive impact.</p>
         </div>
         <motion.div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-5" variants={list} initial="hidden" whileInView="show" viewport={{ once: true }}>
@@ -181,7 +181,7 @@ export default function HomePage() {
   {!isAuthed && (
   <section className="container" id="how">
         <div className="text-center max-w-2xl mx-auto">
-          <h2 className="text-3xl font-bold">How it works</h2>
+          <h2 className="text-3xl font-bold text-slate-100">How it works</h2>
           <p className="mt-2 subtle">From donation to impact in three simple steps.</p>
         </div>
         <motion.div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-5" variants={list} initial="hidden" whileInView="show" viewport={{ once: true }}>
@@ -224,7 +224,7 @@ export default function HomePage() {
       {/* Trending campaigns */}
       <section className="container" id="trending">
         <div className="flex items-end justify-between mb-4">
-          <h2 className="text-2xl font-semibold">Trending Campaigns</h2>
+          <h2 className="text-2xl font-semibold text-slate-100">Trending Campaigns</h2>
           <div />
         </div>
         {isLoading && <div className="subtle">Loading campaigns...</div>}
@@ -241,7 +241,7 @@ export default function HomePage() {
                 </Link>
                 {/* Content */}
                 <div className="p-5">
-                  <div className="font-semibold text-slate-900 mb-1">{normalizeTitle(c.title, idx)}</div>
+                  <div className="font-semibold text-slate-100 mb-1">{normalizeTitle(c.title, idx)}</div>
                   <div className="text-sm subtle">Charity: {c.charityName || 'Partner Charity'}</div>
                   <div className="mt-3">
                     {/* Progress */}

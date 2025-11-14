@@ -18,19 +18,19 @@ export function Sidebar() {
       <div className="sticky top-16 h-[calc(100vh-4rem)] p-4 pr-2">
         <div className="glass rounded-2xl p-3 h-full overflow-auto">
           <nav className="space-y-1">
-            <Link href="/" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">Home</Link>
-            <Link href="/my-account" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">My Account</Link>
-            <Link href="/dashboard/donor" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">My Dashboard</Link>
-            <Link href="/browse/charities" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">Browse Charities</Link>
-            <Link href="/browse/campaigns" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">Browse Campaigns</Link>
+            <Link href="/" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">Home</Link>
+            <Link href="/my-account" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">My Account</Link>
+            <Link href="/dashboard/donor" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">My Dashboard</Link>
+            <Link href="/browse/charities" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">Browse Charities</Link>
+            <Link href="/browse/campaigns" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">Browse Campaigns</Link>
             {isCharityAdmin && (
               <>
-                <Link href="/dashboard/charity" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">My Charity Dashboard</Link>
+                <Link href="/dashboard/charity" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">My Charity Dashboard</Link>
                 {/* Create Campaign moved into the charity dashboard main area so it can show fundraising context and totals — remove from sidebar */}
               </>
             )}
             {(isPlatformAdmin || isDevAdminOverride) && (
-              <Link href="/dashboard/admin" className="block px-3 py-2 rounded-lg hover:bg-brand-50 text-slate-700 hover:text-brand-700 transition-colors">Admin Control Panel</Link>
+              <Link href="/dashboard/admin" className="block px-3 py-2 rounded-lg hover:bg-brand-50 dark:hover:bg-white/10 text-slate-700 dark:text-slate-200 hover:text-brand-700 transition-colors">Admin Control Panel</Link>
             )}
           </nav>
           <div className="pt-4">
